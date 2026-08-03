@@ -31,10 +31,7 @@
         "resizable": false,
         "visible": false
       }
-    ],
-    "security": {
-      "csp": null
-    }
+    ]
   },
   "bundle": {
     "active": true,
@@ -48,6 +45,7 @@
     ]
   },
   "security": {
+    "csp": null,
     "assetProtocol": {
       "enable": true,
       "scope": ["$APPDATA/**"]
