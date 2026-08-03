@@ -11,6 +11,8 @@ pub fn run() {
             commands::pet::save_pet,
             commands::pet::list_pets,
             commands::pet::delete_pet,
+            commands::settings::save_window_position,
+            commands::settings::load_window_position,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
