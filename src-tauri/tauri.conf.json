@@ -12,9 +12,24 @@
   "app": {
     "windows": [
       {
-        "title": "desktop-pet",
-        "width": 800,
-        "height": 600
+        "label": "creator",
+        "title": "Desktop Pet — Create",
+        "width": 860,
+        "height": 640,
+        "resizable": true,
+        "visible": true
+      },
+      {
+        "label": "pet",
+        "title": "Pet",
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "width": 200,
+        "height": 240,
+        "resizable": false,
+        "visible": false
       }
     ],
     "security": {
@@ -31,5 +46,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "security": {
+    "assetProtocol": {
+      "enable": true,
+      "scope": ["$APPDATA/**"]
+    }
   }
 }
