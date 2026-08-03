@@ -8,44 +8,6 @@ fn pets_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_dir.join("pets"))
 }
 
-#[tauri::command]
-pub fn save_pet(app: AppHandle, pet: Pet) -> Result<(), String> {
-    let dir = pets_dir(&app)?.join(&pet.id);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(&pet).map_err(|e| e.to_string())?;
-    fs::write(dir.join("pet.json"), json).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn list_pets(app: AppHandle) -> Result<Vec<Pet>, String> {
-    let dir = pets_dir(&app)?;
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut pets = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let pet_json = entry.path().join("pet.json");
-        if pet_json.exists() {
-            let json = fs::read_to_string(&pet_json).map_err(|e| e.to_string())?;
-            let pet: Pet = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-            pets.push(pet);
-        }
-    }
-    Ok(pets)
-}
-
-#[tauri::command]
-pub fn delete_pet(app: AppHandle, pet_id: String) -> Result<(), String> {
-    let dir = pets_dir(&app)?.join(&pet_id);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-// Pure functions for unit testing (no AppHandle required)
 fn write_pet_to_dir(base_dir: &PathBuf, pet: &Pet) -> Result<(), String> {
     let dir = base_dir.join(&pet.id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -69,6 +31,32 @@ fn read_pets_from_dir(base_dir: &PathBuf) -> Result<Vec<Pet>, String> {
         }
     }
     Ok(pets)
+}
+
+fn delete_pet_from_dir(base_dir: &PathBuf, pet_id: &str) -> Result<(), String> {
+    let dir = base_dir.join(pet_id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_pet(app: AppHandle, pet: Pet) -> Result<(), String> {
+    let dir = pets_dir(&app)?;
+    write_pet_to_dir(&dir, &pet)
+}
+
+#[tauri::command]
+pub fn list_pets(app: AppHandle) -> Result<Vec<Pet>, String> {
+    let dir = pets_dir(&app)?;
+    read_pets_from_dir(&dir)
+}
+
+#[tauri::command]
+pub fn delete_pet(app: AppHandle, pet_id: String) -> Result<(), String> {
+    let dir = pets_dir(&app)?;
+    delete_pet_from_dir(&dir, &pet_id)
 }
 
 #[cfg(test)]
@@ -125,9 +113,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let base = dir.path().to_path_buf();
         write_pet_to_dir(&base, &make_pet("to-delete")).unwrap();
-        let pet_dir = base.join("to-delete");
-        assert!(pet_dir.exists());
-        fs::remove_dir_all(&pet_dir).unwrap();
+        delete_pet_from_dir(&base, "to-delete").unwrap();
         let loaded = read_pets_from_dir(&base).unwrap();
         assert!(loaded.is_empty());
     }
