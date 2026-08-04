@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import UploadStep from '../UploadStep';
 
 describe('UploadStep', () => {
@@ -22,21 +22,24 @@ describe('UploadStep', () => {
     const file = new File(['fake'], 'photo.jpg', { type: 'image/jpeg' });
     Object.defineProperty(input, 'files', { value: [file] });
 
-    // Mock FileReader
-    const mockReadAsDataURL = vi.fn();
-    const mockReader = {
-      readAsDataURL: mockReadAsDataURL,
-      onload: null as unknown as ((e: ProgressEvent) => void) | null,
-      result: 'data:image/jpeg;base64,fake',
-    };
-    vi.spyOn(globalThis, 'FileReader').mockImplementation(() => mockReader as unknown as FileReader);
+    // vi.stubGlobal with a class so `new FileReader()` works as a constructor
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedReader: any = null;
+    class MockFileReader {
+      onload: ((e: ProgressEvent) => void) | null = null;
+      result = 'data:image/jpeg;base64,fake';
+      readAsDataURL = vi.fn();
+      constructor() { capturedReader = this; }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
 
     fireEvent.change(input);
-
-    // Trigger the onload
-    mockReader.onload?.({ target: mockReader } as unknown as ProgressEvent);
+    act(() => {
+      capturedReader.onload?.({ target: capturedReader } as unknown as ProgressEvent);
+    });
 
     expect(screen.getByAltText('preview')).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 
   it('Next button is disabled until a photo is selected', () => {

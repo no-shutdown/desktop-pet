@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { analyzePhoto } from '../../../lib/claude-vision';
+import { loadSettings, VISION_PROVIDER_LABELS } from '../../../lib/settings';
+import { analyzePhotoWithSettings } from '../../../lib/vision';
 
 interface AnalyzeStepProps {
   photoDataUrl: string;
@@ -9,16 +10,18 @@ interface AnalyzeStepProps {
 }
 
 export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBack }: AnalyzeStepProps) {
-  const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState(initialPrompt);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const settings = loadSettings();
+  const canAnalyze = settings.visionProvider !== 'skip' && settings.visionApiKey.length > 0;
 
   async function handleAnalyze() {
     setAnalyzing(true);
     setError(null);
     try {
-      const description = await analyzePhoto(photoDataUrl, apiKey);
+      const description = await analyzePhotoWithSettings(photoDataUrl, settings);
       setPrompt(description);
     } catch (err) {
       setError((err as Error).message);
@@ -26,6 +29,8 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
       setAnalyzing(false);
     }
   }
+
+  const providerLabel = VISION_PROVIDER_LABELS[settings.visionProvider];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -37,35 +42,33 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
         />
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <label style={{ fontSize: 13, color: '#4a5568', display: 'block', marginBottom: 4 }}>
-              Anthropic API Key <span style={{ color: '#a0aec0' }}>(optional)</span>
-            </label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type="password"
-                placeholder="Anthropic API key"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                style={{
-                  flex: 1, padding: '6px 10px', borderRadius: 6,
-                  border: '1px solid #e2e8f0', fontSize: 13,
-                }}
-              />
+          {settings.visionProvider === 'skip' ? (
+            <p style={{ margin: 0, fontSize: 13, color: '#718096' }}>
+              Vision analysis is disabled. Type your character description below, or change the provider in{' '}
+              <strong>Settings</strong>.
+            </p>
+          ) : (
+            <div>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: '#4a5568' }}>
+                Provider: <strong>{providerLabel}</strong>
+                {!canAnalyze && (
+                  <span style={{ color: '#e53e3e', marginLeft: 8 }}>— API key not set (open Settings)</span>
+                )}
+              </p>
               <button
                 onClick={handleAnalyze}
-                disabled={!apiKey || analyzing}
+                disabled={!canAnalyze || analyzing}
                 style={{
                   padding: '6px 16px', borderRadius: 6, border: 'none',
-                  background: apiKey && !analyzing ? '#4f8ef7' : '#e2e8f0',
-                  color: '#fff', cursor: apiKey && !analyzing ? 'pointer' : 'not-allowed',
+                  background: canAnalyze && !analyzing ? '#4f8ef7' : '#e2e8f0',
+                  color: '#fff', cursor: canAnalyze && !analyzing ? 'pointer' : 'not-allowed',
                   fontSize: 13, whiteSpace: 'nowrap',
                 }}
               >
                 {analyzing ? 'Analyzing…' : 'Analyze with AI'}
               </button>
             </div>
-          </div>
+          )}
 
           {error && (
             <p style={{ color: '#e53e3e', fontSize: 13, margin: 0 }}>{error}</p>
@@ -94,17 +97,14 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
           }}
         />
         <p style={{ color: '#a0aec0', fontSize: 12, marginTop: 4 }}>
-          No AI key? Type the character description manually above.
+          {canAnalyze ? 'AI-generated above — edit as needed.' : 'Type the description manually above.'}
         </p>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
         <button
           onClick={onBack}
-          style={{
-            padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0',
-            background: '#fff', color: '#4a5568', cursor: 'pointer',
-          }}
+          style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: 'pointer' }}
         >
           Back
         </button>

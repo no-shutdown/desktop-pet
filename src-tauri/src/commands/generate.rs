@@ -93,6 +93,66 @@ pub async fn download_image(url: &str) -> Result<Vec<u8>, String> {
     response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
 }
 
+/// Fetches image bytes for a single frame from SiliconFlow.
+/// Returns the image bytes after downloading from the signed URL in the response.
+async fn fetch_image_siliconflow(prompt: &str, api_key: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": "black-forest-labs/FLUX.1-schnell",
+        "prompt": prompt,
+        "image_size": "128x128",
+        "num_inference_steps": 20,
+        "num_images": 1,
+    });
+    let response = client
+        .post("https://api.siliconflow.cn/v1/images/generations")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("SiliconFlow API error: {}", response.status()));
+    }
+    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let image_url = data["images"][0]["url"]
+        .as_str()
+        .ok_or_else(|| "SiliconFlow: missing image URL in response".to_string())?;
+    download_image(image_url).await
+}
+
+/// Fetches image bytes for a single frame from a local AUTOMATIC1111 SD WebUI.
+/// Returns PNG bytes decoded from base64.
+async fn fetch_image_localsd(prompt: &str, sd_url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "prompt": prompt,
+        "negative_prompt": "ugly, blurry, watermark",
+        "steps": 20,
+        "width": 128,
+        "height": 128,
+        "batch_size": 1,
+    });
+    let endpoint = format!("{}/sdapi/v1/txt2img", sd_url.trim_end_matches('/'));
+    let response = client
+        .post(&endpoint)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Local SD connection failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Local SD API error: {}", response.status()));
+    }
+    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let b64 = data["images"][0]
+        .as_str()
+        .ok_or_else(|| "Local SD: missing image in response".to_string())?;
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("Local SD base64 decode error: {e}"))
+}
+
 /// Saves GIF bytes to <app_data>/pets/<pet_id>/<state>.gif.
 fn save_gif(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, gif_bytes: &[u8]) -> Result<(), String> {
     let dir = pets_dir.join(pet_id);
@@ -103,15 +163,20 @@ fn save_gif(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, gif_bytes:
 
 /// Generates all 4 animated GIFs for a pet and saves them to AppData.
 /// Emits "generation-progress" events: { current: u32, total: u32 }.
+/// image_provider: "pollinations" | "siliconflow" | "localsd"
 #[tauri::command]
 pub async fn generate_and_assemble(
     app: tauri::AppHandle,
     pet_id: String,
     base_prompt: String,
+    image_provider: Option<String>,
+    image_api_key: Option<String>,
+    local_sd_url: Option<String>,
 ) -> Result<(), String> {
     use tauri::Manager;
     use tauri::Emitter;
 
+    let provider = image_provider.as_deref().unwrap_or("pollinations");
     let pets_dir = app.path().app_data_dir().map_err(|error| error.to_string())?.join("pets");
     let all_prompts = build_frame_prompts(&base_prompt);
     let mut current: u32 = 0;
@@ -120,8 +185,22 @@ pub async fn generate_and_assemble(
         let mut rgba_frames: Vec<RgbaImage> = Vec::new();
 
         for prompt in frame_prompts {
-            let url = build_pollinations_url(prompt);
-            let bytes = download_image(&url).await?;
+            let bytes = match provider {
+                "siliconflow" => {
+                    let key = image_api_key.as_deref()
+                        .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
+                    fetch_image_siliconflow(prompt, key).await?
+                }
+                "localsd" => {
+                    let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
+                    fetch_image_localsd(prompt, url).await?
+                }
+                _ => {
+                    let url = build_pollinations_url(prompt);
+                    download_image(&url).await?
+                }
+            };
+
             let mut rgba = decode_jpeg(&bytes)?;
             apply_chroma_key(&mut rgba, 30);
             rgba_frames.push(rgba);
@@ -137,6 +216,50 @@ pub async fn generate_and_assemble(
         save_gif(&pets_dir, &pet_id, state, &gif_bytes)?;
     }
 
+    Ok(())
+}
+
+fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
+    let comma_pos = data_url.find(',').ok_or_else(|| "invalid data URL: missing comma".to_string())?;
+    let base64_str = &data_url[comma_pos + 1..];
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_str)
+        .map_err(|e| format!("base64 decode error: {e}"))
+}
+
+fn save_frame_file(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, bytes: &[u8]) -> Result<(), String> {
+    let dir = pets_dir.join(pet_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{}.gif", state)), bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Saves user-supplied images/GIFs as the four animation states without AI generation.
+#[tauri::command]
+pub async fn save_custom_frames(
+    app: tauri::AppHandle,
+    pet_id: String,
+    idle: String,
+    walking: String,
+    waving: String,
+    working: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let pets_dir = app.path().app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("pets");
+
+    let entries = [
+        ("idle", &idle),
+        ("walking", &walking),
+        ("waving", &waving),
+        ("working", &working),
+    ];
+    for (state, data_url) in &entries {
+        let bytes = decode_data_url(data_url)?;
+        save_frame_file(&pets_dir, &pet_id, state, &bytes)?;
+    }
     Ok(())
 }
 

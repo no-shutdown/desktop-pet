@@ -21,18 +21,12 @@ export default function UploadStep({ onNext }: UploadStepProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   function loadFile(file: File) {
-    try {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const result = (e.target as FileReader).result as string;
-        setPreview(result);
-      };
-      reader.readAsDataURL(file);
-    } catch {
-      // Fallback: use URL.createObjectURL when FileReader is unavailable
-      const objectUrl = URL.createObjectURL(file);
-      setPreview(objectUrl);
-    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = (e.target as FileReader).result as string;
+      setPreview(result);
+    };
+    reader.readAsDataURL(file);
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {

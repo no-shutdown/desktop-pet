@@ -1,0 +1,88 @@
+import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { appDataDir, join } from '@tauri-apps/api/path';
+import type { Pet } from '../../../types/pet';
+
+interface SaveStepProps {
+  petId: string;
+  prompt: string;
+  onComplete: (pet: Pet) => void;
+  onBack: () => void;
+}
+
+export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStepProps) {
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const appDir = await appDataDir();
+      const frames = {
+        idle:    await join(appDir, 'pets', petId, 'idle.gif'),
+        walking: await join(appDir, 'pets', petId, 'walking.gif'),
+        waving:  await join(appDir, 'pets', petId, 'waving.gif'),
+        working: await join(appDir, 'pets', petId, 'working.gif'),
+      };
+      const pet: Pet = {
+        id: petId,
+        name: name.trim(),
+        frames,
+        createdAt: new Date().toISOString(),
+        prompt,
+      };
+      await invoke('save_pet', { pet });
+      onComplete(pet);
+    } catch (err) {
+      setError((err as Error).message ?? String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, alignItems: 'center', padding: '32px 0' }}>
+      <div style={{ fontSize: 48 }}>💾</div>
+      <p style={{ color: '#718096', margin: 0 }}>Give your pet a name to save it.</p>
+
+      <input
+        type="text"
+        placeholder="Pet name…"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+        maxLength={32}
+        style={{
+          padding: '10px 16px', borderRadius: 8, border: '1px solid #e2e8f0',
+          fontSize: 16, width: 240, textAlign: 'center',
+        }}
+      />
+
+      {error && <p style={{ color: '#e53e3e', fontSize: 13, margin: 0 }}>{error}</p>}
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button
+          onClick={onBack}
+          disabled={saving}
+          style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: saving ? 'not-allowed' : 'pointer' }}
+        >
+          Back
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!name.trim() || saving}
+          style={{
+            padding: '8px 24px', borderRadius: 6, border: 'none',
+            background: name.trim() && !saving ? '#4f8ef7' : '#e2e8f0',
+            color: '#fff', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {saving ? 'Saving…' : 'Save Pet'}
+        </button>
+      </div>
+    </div>
+  );
+}

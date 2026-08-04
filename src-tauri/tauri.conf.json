@@ -10,6 +10,13 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      }
+    },
     "windows": [
       {
         "label": "creator",
@@ -43,12 +50,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "security": {
-    "csp": null,
-    "assetProtocol": {
-      "enable": true,
-      "scope": ["$APPDATA/**"]
-    }
   }
 }
