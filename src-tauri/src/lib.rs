@@ -17,6 +17,7 @@ pub fn run() {
             commands::pet::delete_pet,
             commands::settings::save_window_position,
             commands::settings::load_window_position,
+            commands::generate::generate_and_assemble,
         ])
         .setup(|app| {
             let show_item = MenuItem::with_id(app, "show", "Show Pet", true, None::<&str>)?;

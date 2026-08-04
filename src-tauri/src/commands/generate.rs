@@ -84,6 +84,62 @@ pub fn assemble_gif_bytes(frames: Vec<RgbaImage>, delay_cs: u16) -> Result<Vec<u
     Ok(output)
 }
 
+/// Downloads a single image from a URL, returns raw bytes.
+pub async fn download_image(url: &str) -> Result<Vec<u8>, String> {
+    let response = reqwest::get(url).await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {} downloading image", response.status()));
+    }
+    response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+}
+
+/// Saves GIF bytes to <app_data>/pets/<pet_id>/<state>.gif.
+fn save_gif(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, gif_bytes: &[u8]) -> Result<(), String> {
+    let dir = pets_dir.join(pet_id);
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    std::fs::write(dir.join(format!("{}.gif", state)), gif_bytes).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Generates all 4 animated GIFs for a pet and saves them to AppData.
+/// Emits "generation-progress" events: { current: u32, total: u32 }.
+#[tauri::command]
+pub async fn generate_and_assemble(
+    app: tauri::AppHandle,
+    pet_id: String,
+    base_prompt: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri::Emitter;
+
+    let pets_dir = app.path().app_data_dir().map_err(|error| error.to_string())?.join("pets");
+    let all_prompts = build_frame_prompts(&base_prompt);
+    let mut current: u32 = 0;
+
+    for (state, frame_prompts) in &all_prompts {
+        let mut rgba_frames: Vec<RgbaImage> = Vec::new();
+
+        for prompt in frame_prompts {
+            let url = build_pollinations_url(prompt);
+            let bytes = download_image(&url).await?;
+            let mut rgba = decode_jpeg(&bytes)?;
+            apply_chroma_key(&mut rgba, 30);
+            rgba_frames.push(rgba);
+
+            current += 1;
+            let _ = app.emit("generation-progress", serde_json::json!({
+                "current": current,
+                "total": TOTAL_FRAMES as u32,
+            }));
+        }
+
+        let gif_bytes = assemble_gif_bytes(rgba_frames, 10)?;
+        save_gif(&pets_dir, &pet_id, state, &gif_bytes)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
