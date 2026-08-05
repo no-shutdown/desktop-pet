@@ -1,16 +1,16 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { appDataDir, join } from '@tauri-apps/api/path';
-import type { Pet } from '../../../types/pet';
+import type { Pet, PetState, SpriteStateInfo } from '../../../types/pet';
 
 interface SaveStepProps {
   petId: string;
   prompt: string;
+  states: Record<PetState, SpriteStateInfo>;
   onComplete: (pet: Pet) => void;
   onBack: () => void;
 }
 
-export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStepProps) {
+export default function SaveStep({ petId, prompt, states, onComplete, onBack }: SaveStepProps) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,17 +20,10 @@ export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStep
     setSaving(true);
     setError(null);
     try {
-      const appDir = await appDataDir();
-      const frames = {
-        idle:    await join(appDir, 'pets', petId, 'idle.gif'),
-        walking: await join(appDir, 'pets', petId, 'walking.gif'),
-        waving:  await join(appDir, 'pets', petId, 'waving.gif'),
-        working: await join(appDir, 'pets', petId, 'working.gif'),
-      };
       const pet: Pet = {
         id: petId,
         name: name.trim(),
-        frames,
+        states,
         createdAt: new Date().toISOString(),
         prompt,
       };
