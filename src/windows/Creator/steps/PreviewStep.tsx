@@ -11,17 +11,17 @@ interface PreviewStepProps {
 const STATES = ['idle', 'walking', 'waving', 'working'] as const;
 
 export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps) {
-  const [gifSrcs, setGifSrcs] = useState<Record<string, string>>({});
+  const [sheetSrcs, setSheetSrcs] = useState<Record<string, string>>({});
 
   useEffect(() => {
     async function loadPaths() {
       const appDir = await appDataDir();
       const srcs: Record<string, string> = {};
       for (const state of STATES) {
-        const absPath = await join(appDir, 'pets', petId, `${state}.gif`);
+        const absPath = await join(appDir, 'pets', petId, `${state}.png`);
         srcs[state] = convertFileSrc(absPath);
       }
-      setGifSrcs(srcs);
+      setSheetSrcs(srcs);
     }
     loadPaths();
   }, [petId]);
@@ -40,9 +40,9 @@ export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps)
               border: '1px solid #e2e8f0', minHeight: 100,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
-              {gifSrcs[state] ? (
+              {sheetSrcs[state] ? (
                 <img
-                  src={gifSrcs[state]}
+                  src={sheetSrcs[state]}
                   alt={state}
                   style={{ maxWidth: '100%', maxHeight: 120, imageRendering: 'pixelated' }}
                 />
