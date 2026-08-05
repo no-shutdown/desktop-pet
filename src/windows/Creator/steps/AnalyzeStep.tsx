@@ -1,5 +1,9 @@
 import { useState } from 'react';
-import { loadSettings, saveSettings, type VisionProvider } from '../../../lib/settings';
+import {
+  loadSettings, saveSettings,
+  getVisionModels, defaultVisionModel,
+  type VisionProvider,
+} from '../../../lib/settings';
 import { analyzePhotoWithSettings } from '../../../lib/vision';
 
 interface AnalyzeStepProps {
@@ -11,9 +15,9 @@ interface AnalyzeStepProps {
 
 const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] = [
   { value: 'skip',      label: '跳过（手动输入）', desc: '自己描述角色特征' },
-  { value: 'anthropic', label: 'Anthropic Claude', desc: '效果最佳，claude-opus-4-7' },
+  { value: 'anthropic', label: 'Anthropic Claude', desc: '效果最佳' },
   { value: 'deepseek',  label: 'DeepSeek',         desc: 'deepseek-vl2 视觉模型' },
-  { value: 'kimi',      label: 'Kimi（月之暗面）',  desc: 'moonshot-v1-8k-vision-preview' },
+  { value: 'kimi',      label: 'Kimi（月之暗面）',  desc: 'moonshot 视觉模型' },
 ];
 
 export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBack }: AnalyzeStepProps) {
@@ -30,6 +34,11 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
     });
   }
 
+  function handleProviderChange(provider: VisionProvider) {
+    updateSettings({ visionProvider: provider, visionModel: defaultVisionModel(provider) });
+  }
+
+  const visionModels = getVisionModels(settings.visionProvider);
   const canAnalyze = settings.visionProvider !== 'skip' && settings.visionApiKey.trim().length > 0;
 
   async function handleAnalyze() {
@@ -65,7 +74,7 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
                 name="visionProvider"
                 value={value}
                 checked={settings.visionProvider === value}
-                onChange={() => updateSettings({ visionProvider: value })}
+                onChange={() => handleProviderChange(value)}
                 style={{ marginTop: 3, accentColor: '#4f8ef7' }}
               />
               <div>
@@ -74,29 +83,42 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
               </div>
             </label>
           ))}
+
           {settings.visionProvider !== 'skip' && (
-            <input
-              type="password"
-              value={settings.visionApiKey}
-              onChange={(e) => updateSettings({ visionApiKey: e.target.value })}
-              placeholder="粘贴 API Key…"
-              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, width: '100%', boxSizing: 'border-box' }}
-            />
+            <>
+              <input
+                type="password"
+                value={settings.visionApiKey}
+                onChange={(e) => updateSettings({ visionApiKey: e.target.value })}
+                placeholder="粘贴 API Key…"
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, width: '100%', boxSizing: 'border-box' }}
+              />
+              {visionModels.length > 0 && (
+                <select
+                  value={settings.visionModel}
+                  onChange={(e) => updateSettings({ visionModel: e.target.value })}
+                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
+                >
+                  {visionModels.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={handleAnalyze}
+                disabled={!canAnalyze || analyzing}
+                style={{
+                  padding: '6px 16px', borderRadius: 6, border: 'none',
+                  background: canAnalyze && !analyzing ? '#4f8ef7' : '#e2e8f0',
+                  color: '#fff', cursor: canAnalyze && !analyzing ? 'pointer' : 'not-allowed',
+                  fontSize: 13, alignSelf: 'flex-start',
+                }}
+              >
+                {analyzing ? '分析中…' : 'AI 分析照片'}
+              </button>
+            </>
           )}
-          {settings.visionProvider !== 'skip' && (
-            <button
-              onClick={handleAnalyze}
-              disabled={!canAnalyze || analyzing}
-              style={{
-                padding: '6px 16px', borderRadius: 6, border: 'none',
-                background: canAnalyze && !analyzing ? '#4f8ef7' : '#e2e8f0',
-                color: '#fff', cursor: canAnalyze && !analyzing ? 'pointer' : 'not-allowed',
-                fontSize: 13, alignSelf: 'flex-start',
-              }}
-            >
-              {analyzing ? '分析中…' : 'AI 分析照片'}
-            </button>
-          )}
+
           {error && <p style={{ color: '#e53e3e', fontSize: 13, margin: 0 }}>{error}</p>}
         </div>
       </div>

@@ -19,27 +19,27 @@ export async function analyzePhotoWithSettings(
 
   switch (settings.visionProvider) {
     case 'anthropic':
-      return analyzeWithAnthropic(imageDataUrl, settings.visionApiKey);
+      return analyzeWithAnthropic(imageDataUrl, settings.visionApiKey, settings.visionModel);
     case 'deepseek':
       return analyzeOpenAICompat(
         imageDataUrl,
         settings.visionApiKey,
         'https://api.deepseek.com/v1',
-        'deepseek-vl2',
+        settings.visionModel,
       );
     case 'kimi':
       return analyzeOpenAICompat(
         imageDataUrl,
         settings.visionApiKey,
         'https://api.moonshot.cn/v1',
-        'moonshot-v1-8k-vision-preview',
+        settings.visionModel,
       );
     default:
       throw new Error(`Unknown vision provider: ${settings.visionProvider}`);
   }
 }
 
-async function analyzeWithAnthropic(imageDataUrl: string, apiKey: string): Promise<string> {
+async function analyzeWithAnthropic(imageDataUrl: string, apiKey: string, model: string): Promise<string> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -48,7 +48,7 @@ async function analyzeWithAnthropic(imageDataUrl: string, apiKey: string): Promi
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-7',
+      model,
       max_tokens: 256,
       system: SYSTEM_PROMPT,
       messages: buildAnalysisMessages(imageDataUrl),

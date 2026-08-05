@@ -2,16 +2,44 @@ pub mod models;
 pub mod commands;
 
 use tauri::{
-    Builder, Manager,
+    AppHandle, Builder, Manager,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
+
+fn open_or_create_creator(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("creator") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        use tauri::WebviewWindowBuilder;
+        if let Ok(win) = WebviewWindowBuilder::new(
+            app,
+            "creator",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Desktop Pet — Create")
+        .inner_size(860.0, 640.0)
+        .resizable(true)
+        .build()
+        {
+            let _ = win.set_focus();
+        }
+    }
+}
+
+#[tauri::command]
+fn open_creator(app: AppHandle) {
+    open_or_create_creator(&app);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     Builder::default()
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            open_creator,
             commands::pet::save_pet,
             commands::pet::list_pets,
             commands::pet::delete_pet,
@@ -34,15 +62,15 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(win) = app.get_webview_window("pet") {
-                            let _ = win.show();
-                        }
-                    }
-                    "creator" => {
-                        if let Some(win) = app.get_webview_window("creator") {
+                            let _ = win.unminimize();
                             let _ = win.show();
                             let _ = win.set_focus();
+                            // Tell the pet window to refresh its pet list
+                            use tauri::Emitter;
+                            let _ = win.emit("pet-window-show", ());
                         }
                     }
+                    "creator" => open_or_create_creator(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
