@@ -1,17 +1,18 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { loadSettings, saveSettings, type ImageProvider } from '../../../lib/settings';
+import { loadSettings, saveSettings, SILICONFLOW_MODELS, type ImageProvider } from '../../../lib/settings';
+import type { PetState, SpriteStateInfo } from '../../../types/pet';
 
 interface GenerateStepProps {
   prompt: string;
-  onNext: (petId: string) => void;
+  onNext: (petId: string, states: Record<PetState, SpriteStateInfo>) => void;
   onBack: () => void;
 }
 
 type Status = 'idle' | 'generating' | 'done' | 'error';
 
-const TOTAL_FRAMES = 18;
+const TOTAL_STATES = 4;
 
 const IMAGE_OPTIONS: { value: ImageProvider; label: string; desc: string }[] = [
   { value: 'pollinations', label: 'Pollinations.ai（免费）', desc: '无需 API Key，Flux 模型' },
@@ -21,10 +22,10 @@ const IMAGE_OPTIONS: { value: ImageProvider; label: string; desc: string }[] = [
 
 export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepProps) {
   const [status, setStatus] = useState<Status>('idle');
-  const [progress, setProgress] = useState({ current: 0, total: TOTAL_FRAMES });
+  const [progress, setProgress] = useState({ current: 0, total: TOTAL_STATES });
   const [petId, setPetId] = useState<string | null>(null);
+  const [statesResult, setStatesResult] = useState<Record<PetState, SpriteStateInfo> | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [settings, setSettings] = useState(loadSettings);
 
   function updateSettings(patch: Partial<ReturnType<typeof loadSettings>>) {
@@ -38,45 +39,41 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
   async function handleGenerate() {
     const id = crypto.randomUUID();
     setPetId(id);
+    setStatesResult(null);
     setStatus('generating');
-    setProgress({ current: 0, total: TOTAL_FRAMES });
-
-    setWarnings([]);
+    setProgress({ current: 0, total: TOTAL_STATES });
 
     const unlisten = await listen<{ current: number; total: number }>(
       'generation-progress',
       (event) => setProgress(event.payload)
     );
-    const unlistenWarn = await listen<{ frame: number; error: string }>(
-      'generation-warning',
-      (event) => setWarnings((w) => [...w, `第 ${event.payload.frame} 帧生成失败，已用上一帧替代（${event.payload.error}）`])
-    );
 
     try {
-      await invoke('generate_and_assemble', {
+      const states = await invoke<Record<PetState, SpriteStateInfo>>('generate_and_assemble', {
         petId: id,
         basePrompt: prompt,
         imageProvider: settings.imageProvider,
         imageApiKey: settings.imageApiKey || null,
+        imageModel: settings.imageModel || null,
         localSdUrl: settings.localSdUrl || null,
       });
+      setStatesResult(states);
       setStatus('done');
     } catch (err) {
       setErrorMsg((err as Error).message ?? String(err));
       setStatus('error');
     } finally {
       unlisten();
-      unlistenWarn();
     }
   }
 
   const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
   const generating = status === 'generating';
+  const showConfig = status === 'idle' || status === 'error';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* 图像生成设置 */}
-      {status === 'idle' || status === 'error' ? (
+      {showConfig && (
         <div style={{ background: '#f7fafc', borderRadius: 10, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             图像生成服务
@@ -97,15 +94,28 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
               </div>
             </label>
           ))}
+
           {settings.imageProvider === 'siliconflow' && (
-            <input
-              type="password"
-              value={settings.imageApiKey}
-              onChange={(e) => updateSettings({ imageApiKey: e.target.value })}
-              placeholder="粘贴硅基流动 API Key…"
-              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
-            />
+            <>
+              <input
+                type="password"
+                value={settings.imageApiKey}
+                onChange={(e) => updateSettings({ imageApiKey: e.target.value })}
+                placeholder="粘贴硅基流动 API Key…"
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
+              />
+              <select
+                value={settings.imageModel}
+                onChange={(e) => updateSettings({ imageModel: e.target.value })}
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
+              >
+                {SILICONFLOW_MODELS.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </>
           )}
+
           {settings.imageProvider === 'localsd' && (
             <input
               type="text"
@@ -116,17 +126,16 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
             />
           )}
         </div>
-      ) : null}
+      )}
 
-      {/* 状态展示 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', padding: '16px 0' }}>
         {status === 'idle' && (
           <>
             <div style={{ fontSize: 48 }}>✨</div>
             <p style={{ color: '#718096', textAlign: 'center', margin: 0 }}>
-              准备生成 18 帧动画。
+              将生成 4 个动画状态，每个状态整体生成一张精灵图再保存为 PNG。
               <br />
-              <span style={{ fontSize: 13, color: '#a0aec0' }}>预计需要 2～5 分钟。</span>
+              <span style={{ fontSize: 13, color: '#a0aec0' }}>预计需要 1～3 分钟。</span>
             </p>
           </>
         )}
@@ -135,7 +144,7 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
           <>
             <div style={{ fontSize: 48 }}>⏳</div>
             <p style={{ color: '#4a5568', margin: 0 }}>
-              正在生成第 {progress.current} / {progress.total} 帧…
+              正在生成第 {progress.current} / {progress.total} 个动画状态…
             </p>
             <div style={{ width: '100%', maxWidth: 360, background: '#e2e8f0', borderRadius: 6, overflow: 'hidden', height: 8 }}>
               <div style={{ width: `${pct}%`, height: '100%', background: '#4f8ef7', transition: 'width 0.3s ease' }} />
@@ -146,15 +155,8 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
 
         {status === 'done' && (
           <>
-            <div style={{ fontSize: 48 }}>{warnings.length > 0 ? '⚠️' : '🎉'}</div>
-            <p style={{ color: warnings.length > 0 ? '#d69e2e' : '#38a169', margin: 0 }}>
-              {warnings.length > 0 ? `生成完成，${warnings.length} 帧用上一帧替代` : '全部帧已生成！'}
-            </p>
-            {warnings.length > 0 && (
-              <div style={{ width: '100%', maxWidth: 400, fontSize: 12, color: '#718096', background: '#fffff0', border: '1px solid #f6e05e', borderRadius: 6, padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {warnings.map((w, i) => <span key={i}>{w}</span>)}
-              </div>
-            )}
+            <div style={{ fontSize: 48 }}>🎉</div>
+            <p style={{ color: '#38a169', margin: 0 }}>全部动画已生成！</p>
           </>
         )}
 
@@ -181,7 +183,7 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
 
         {status === 'done' ? (
           <button
-            onClick={() => petId && onNext(petId)}
+            onClick={() => petId && statesResult && onNext(petId, statesResult)}
             style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: '#4f8ef7', color: '#fff', cursor: 'pointer' }}
           >
             下一步
