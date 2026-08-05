@@ -1,31 +1,66 @@
-use image::RgbaImage;
+use image::{RgbaImage, imageops};
+use std::collections::HashMap;
+use crate::models::SpriteStateInfo;
 
-// Animation state frame counts: idle=4, walking=6, waving=4, working=4
 pub const FRAME_COUNTS: &[(&str, usize)] = &[
-    ("idle", 4),
+    ("idle",    4),
     ("walking", 6),
-    ("waving", 4),
+    ("waving",  4),
     ("working", 4),
 ];
 
-pub const TOTAL_FRAMES: usize = 18;
+pub const TOTAL_STATES: usize = FRAME_COUNTS.len();
+
+const CELL_SIZE: u32 = 128;
 
 fn state_action_prompt(state: &str) -> &str {
     match state {
-        "idle"    => "standing still, relaxed natural pose, slight smile",
-        "walking" => "walking, dynamic stride, arms swinging",
-        "waving"  => "waving hand cheerfully, big smile, arm raised high",
-        "working" => "focused expression, leaning forward slightly, thinking pose",
+        "idle"    => "standing still, relaxed natural pose, slight smile, subtle breathing motion",
+        "walking" => "walking cycle, legs alternating steps, arms swinging naturally at sides",
+        "waving"  => "waving hand high with cheerful big smile, arm raised above head",
+        "working" => "focused working pose, leaning forward slightly, thinking or typing expression",
         _         => "neutral pose",
     }
 }
 
-/// Builds the full Pollinations URL for one frame.
-/// Requests 512×512 (Flux minimum viable size) and truncates prompt to 400 chars,
-/// respecting UTF-8 character boundaries to avoid panics on multi-byte characters.
-pub fn build_pollinations_url(prompt: &str) -> String {
-    let truncated = if prompt.len() > 400 {
-        let mut end = 400;
+pub struct StateSpec {
+    pub state: String,
+    pub frame_count: usize,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+impl StateSpec {
+    pub fn img_width(&self) -> u32  { self.cols as u32 * CELL_SIZE }
+    pub fn img_height(&self) -> u32 { self.rows as u32 * CELL_SIZE }
+}
+
+pub fn build_state_specs() -> Vec<StateSpec> {
+    FRAME_COUNTS.iter().map(|(state, count)| {
+        let cols = 2usize;
+        let rows = (count + cols - 1) / cols;
+        StateSpec { state: state.to_string(), frame_count: *count, cols, rows }
+    }).collect()
+}
+
+pub fn build_sprite_prompt(base_prompt: &str, spec: &StateSpec) -> String {
+    let truncated = if base_prompt.len() > 300 {
+        let mut end = 300;
+        while !base_prompt.is_char_boundary(end) { end -= 1; }
+        &base_prompt[..end]
+    } else {
+        base_prompt
+    };
+    let action = state_action_prompt(&spec.state);
+    format!(
+        "{}, {}, chibi pixel art, simple flat colors, pure white background, full body character, sprite sheet {}x{} grid layout, {} sequential animation frames, same consistent character in every cell",
+        truncated, action, spec.cols, spec.rows, spec.frame_count
+    )
+}
+
+pub fn build_pollinations_url(prompt: &str, width: u32, height: u32) -> String {
+    let truncated = if prompt.len() > 450 {
+        let mut end = 450;
         while !prompt.is_char_boundary(end) { end -= 1; }
         &prompt[..end]
     } else {
@@ -33,26 +68,11 @@ pub fn build_pollinations_url(prompt: &str) -> String {
     };
     let encoded = urlencoding::encode(truncated);
     format!(
-        "https://image.pollinations.ai/prompt/{}?width=512&height=512&nologo=true&model=flux",
-        encoded
+        "https://image.pollinations.ai/prompt/{}?width={}&height={}&nologo=true&model=flux",
+        encoded, width, height
     )
 }
 
-/// Returns all 18 prompts grouped by state: [(state, [prompt1, prompt2, ...]), ...]
-pub fn build_frame_prompts(base_prompt: &str) -> Vec<(String, Vec<String>)> {
-    FRAME_COUNTS.iter().map(|(state, count)| {
-        let action = state_action_prompt(state);
-        let prompts = (0..*count).map(|i| {
-            format!(
-                "{}, {}, Q-version chibi style, pixel art, simple colors, white background, full body character, centered, frame {} of {}",
-                base_prompt, action, i + 1, count
-            )
-        }).collect();
-        (state.to_string(), prompts)
-    }).collect()
-}
-
-/// Removes near-white pixels by setting their alpha to 0 (in place).
 pub fn apply_chroma_key(img: &mut RgbaImage, threshold: u8) {
     for pixel in img.pixels_mut() {
         let [r, g, b, _] = pixel.0;
@@ -62,116 +82,97 @@ pub fn apply_chroma_key(img: &mut RgbaImage, threshold: u8) {
     }
 }
 
-/// Decodes image bytes (JPEG or PNG) into a 128×128 RGBA image.
-pub fn decode_jpeg(bytes: &[u8]) -> Result<RgbaImage, String> {
-    let img = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
-    let resized = img.resize_exact(128, 128, image::imageops::FilterType::Lanczos3);
+pub fn decode_sprite_sheet(bytes: &[u8], width: u32, height: u32) -> Result<RgbaImage, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    let resized = img.resize_exact(width, height, imageops::FilterType::Lanczos3);
     Ok(resized.to_rgba8())
 }
 
-/// Encodes a list of RGBA frames into an animated GIF (returned as bytes).
-/// delay_cs: frame delay in centiseconds (10 = 100ms = 10fps).
-pub fn assemble_gif_bytes(frames: Vec<RgbaImage>, delay_cs: u16) -> Result<Vec<u8>, String> {
-    if frames.is_empty() {
-        return Err("no frames provided".to_string());
-    }
-    let width = frames[0].width() as u16;
-    let height = frames[0].height() as u16;
-
-    let mut output: Vec<u8> = Vec::new();
-    {
-        let mut encoder = gif::Encoder::new(&mut output, width, height, &[])
-            .map_err(|error| error.to_string())?;
-        encoder.set_repeat(gif::Repeat::Infinite).map_err(|error| error.to_string())?;
-
-        for frame_img in frames {
-            let mut pixels = frame_img.into_raw();
-            let mut frame = gif::Frame::from_rgba(width, height, &mut pixels);
-            frame.delay = delay_cs;
-            encoder.write_frame(&frame).map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(output)
+pub fn save_sprite_sheet_png(
+    pets_dir: &std::path::PathBuf,
+    pet_id: &str,
+    state: &str,
+    sheet: &RgbaImage,
+) -> Result<(), String> {
+    let dir = pets_dir.join(pet_id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    sheet
+        .save(dir.join(format!("{}.png", state)))
+        .map_err(|e| e.to_string())
 }
 
-/// Downloads a single image from a URL, returns raw bytes.
-/// Uses a 60-second timeout per attempt and retries up to 3 times.
 pub async fn download_image(url: &str) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
-
     let mut last_err = String::new();
     for attempt in 0..3u64 {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
         }
-        let response = match client.get(url).send().await {
+        let resp = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) => { last_err = e.to_string(); continue; }
         };
-        if response.status().is_success() {
-            return response.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string());
+        if resp.status().is_success() {
+            return resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string());
         }
-        last_err = format!("HTTP {} downloading image", response.status());
+        last_err = format!("HTTP {} downloading image", resp.status());
     }
     Err(last_err)
 }
 
-/// Fetches image bytes for a single frame from SiliconFlow.
-/// Returns the image bytes after downloading from the signed URL in the response.
-async fn fetch_image_siliconflow(prompt: &str, api_key: &str) -> Result<Vec<u8>, String> {
+async fn fetch_image_siliconflow(
+    prompt: &str, api_key: &str, model: &str, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
-        "model": "black-forest-labs/FLUX.1-schnell",
+        "model": model,
         "prompt": prompt,
-        "image_size": "128x128",
+        "image_size": format!("{}x{}", width, height),
         "num_inference_steps": 20,
         "num_images": 1,
     });
-    let response = client
+    let resp = client
         .post("https://api.siliconflow.cn/v1/images/generations")
         .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("SiliconFlow API error: {}", response.status()));
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("SiliconFlow API error {}: {}", status, body_text));
     }
-    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let image_url = data["images"][0]["url"]
         .as_str()
         .ok_or_else(|| "SiliconFlow: missing image URL in response".to_string())?;
     download_image(image_url).await
 }
 
-/// Fetches image bytes for a single frame from a local AUTOMATIC1111 SD WebUI.
-/// Returns PNG bytes decoded from base64.
-async fn fetch_image_localsd(prompt: &str, sd_url: &str) -> Result<Vec<u8>, String> {
+async fn fetch_image_localsd(
+    prompt: &str, sd_url: &str, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "prompt": prompt,
-        "negative_prompt": "ugly, blurry, watermark",
+        "negative_prompt": "ugly, blurry, watermark, multiple characters",
         "steps": 20,
-        "width": 128,
-        "height": 128,
+        "width": width,
+        "height": height,
         "batch_size": 1,
     });
     let endpoint = format!("{}/sdapi/v1/txt2img", sd_url.trim_end_matches('/'));
-    let response = client
-        .post(&endpoint)
-        .json(&body)
-        .send()
-        .await
+    let resp = client.post(&endpoint).json(&body).send().await
         .map_err(|e| format!("Local SD connection failed: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Local SD API error: {}", response.status()));
+    if !resp.status().is_success() {
+        return Err(format!("Local SD API error: {}", resp.status()));
     }
-    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    let b64 = data["images"][0]
-        .as_str()
+    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let b64 = data["images"][0].as_str()
         .ok_or_else(|| "Local SD: missing image in response".to_string())?;
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -179,17 +180,6 @@ async fn fetch_image_localsd(prompt: &str, sd_url: &str) -> Result<Vec<u8>, Stri
         .map_err(|e| format!("Local SD base64 decode error: {e}"))
 }
 
-/// Saves GIF bytes to <app_data>/pets/<pet_id>/<state>.gif.
-fn save_gif(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, gif_bytes: &[u8]) -> Result<(), String> {
-    let dir = pets_dir.join(pet_id);
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    std::fs::write(dir.join(format!("{}.gif", state)), gif_bytes).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// Generates all 4 animated GIFs for a pet and saves them to AppData.
-/// Emits "generation-progress" events: { current: u32, total: u32 }.
-/// image_provider: "pollinations" | "siliconflow" | "localsd"
 #[tauri::command]
 pub async fn generate_and_assemble(
     app: tauri::AppHandle,
@@ -197,68 +187,72 @@ pub async fn generate_and_assemble(
     base_prompt: String,
     image_provider: Option<String>,
     image_api_key: Option<String>,
+    image_model: Option<String>,
     local_sd_url: Option<String>,
-) -> Result<(), String> {
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
     use tauri::Manager;
     use tauri::Emitter;
 
     let provider = image_provider.as_deref().unwrap_or("pollinations");
-    let pets_dir = app.path().app_data_dir().map_err(|error| error.to_string())?.join("pets");
-    let all_prompts = build_frame_prompts(&base_prompt);
+    let pets_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("pets");
+    let state_specs = build_state_specs();
     let mut current: u32 = 0;
+    let mut states: HashMap<String, SpriteStateInfo> = HashMap::new();
 
-    for (state, frame_prompts) in &all_prompts {
-        let mut rgba_frames: Vec<RgbaImage> = Vec::new();
+    for spec in &state_specs {
+        let prompt = build_sprite_prompt(&base_prompt, spec);
+        let target_w = spec.img_width();
+        let target_h = spec.img_height();
 
-        for prompt in frame_prompts {
-            let fetch_result = match provider {
-                "siliconflow" => {
-                    let key = image_api_key.as_deref()
-                        .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
-                    fetch_image_siliconflow(prompt, key).await
+        let fetch_result = match provider {
+            "siliconflow" => {
+                let key = image_api_key.as_deref()
+                    .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
+                let model = image_model.as_deref().unwrap_or("Tongyi-MAI/Z-Image-Turbo");
+                fetch_image_siliconflow(&prompt, key, model, target_w, target_h).await
+            }
+            "localsd" => {
+                let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
+                fetch_image_localsd(&prompt, url, target_w, target_h).await
+            }
+            _ => {
+                if current > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 }
-                "localsd" => {
-                    let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
-                    fetch_image_localsd(prompt, url).await
-                }
-                _ => {
-                    // 3-second gap between Pollinations requests to avoid server overload / rate limits
-                    if current > 0 {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    }
-                    let url = build_pollinations_url(prompt);
-                    download_image(&url).await
-                }
-            };
+                let url = build_pollinations_url(&prompt, target_w, target_h);
+                download_image(&url).await
+            }
+        };
 
-            let rgba = match fetch_result.and_then(|b| decode_jpeg(&b)) {
-                Ok(mut img) => {
-                    apply_chroma_key(&mut img, 30);
-                    img
-                }
-                Err(e) => {
-                    // Single frame failed — use duplicate of last frame (or blank) and keep going
-                    let _ = app.emit("generation-warning", serde_json::json!({
-                        "frame": current + 1,
-                        "error": e,
-                    }));
-                    rgba_frames.last().cloned().unwrap_or_else(|| RgbaImage::new(128, 128))
-                }
-            };
-            rgba_frames.push(rgba);
+        let mut sheet = fetch_result
+            .and_then(|b| decode_sprite_sheet(&b, target_w, target_h))
+            .map_err(|e| format!("生成「{}」动画失败: {}", spec.state, e))?;
 
-            current += 1;
-            let _ = app.emit("generation-progress", serde_json::json!({
-                "current": current,
-                "total": TOTAL_FRAMES as u32,
-            }));
-        }
+        apply_chroma_key(&mut sheet, 30);
+        save_sprite_sheet_png(&pets_dir, &pet_id, &spec.state, &sheet)?;
 
-        let gif_bytes = assemble_gif_bytes(rgba_frames, 10)?;
-        save_gif(&pets_dir, &pet_id, state, &gif_bytes)?;
+        let delay_ms: u32 = match spec.state.as_str() {
+            "walking" | "waving" => 150,
+            _ => 200,
+        };
+
+        states.insert(spec.state.clone(), SpriteStateInfo {
+            cols: spec.cols,
+            rows: spec.rows,
+            frame_count: spec.frame_count,
+            frame_w: 128,
+            frame_h: 128,
+            delay_ms,
+        });
+
+        current += 1;
+        let _ = app.emit("generation-progress", serde_json::json!({
+            "current": current,
+            "total": TOTAL_STATES as u32,
+        }));
     }
 
-    Ok(())
+    Ok(states)
 }
 
 fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
@@ -270,14 +264,6 @@ fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("base64 decode error: {e}"))
 }
 
-fn save_frame_file(pets_dir: &std::path::PathBuf, pet_id: &str, state: &str, bytes: &[u8]) -> Result<(), String> {
-    let dir = pets_dir.join(pet_id);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(format!("{}.gif", state)), bytes).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Saves user-supplied images/GIFs as the four animation states without AI generation.
 #[tauri::command]
 pub async fn save_custom_frames(
     app: tauri::AppHandle,
@@ -286,23 +272,38 @@ pub async fn save_custom_frames(
     walking: String,
     waving: String,
     working: String,
-) -> Result<(), String> {
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
     use tauri::Manager;
+
     let pets_dir = app.path().app_data_dir()
         .map_err(|e| e.to_string())?
         .join("pets");
 
     let entries = [
-        ("idle", &idle),
+        ("idle",    &idle),
         ("walking", &walking),
-        ("waving", &waving),
+        ("waving",  &waving),
         ("working", &working),
     ];
+
+    let mut states: HashMap<String, SpriteStateInfo> = HashMap::new();
+
     for (state, data_url) in &entries {
         let bytes = decode_data_url(data_url)?;
-        save_frame_file(&pets_dir, &pet_id, state, &bytes)?;
+        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        let resized = imageops::resize(&img.to_rgba8(), 128, 128, imageops::FilterType::Lanczos3);
+        save_sprite_sheet_png(&pets_dir, pet_id.as_str(), state, &resized)?;
+        states.insert(state.to_string(), SpriteStateInfo {
+            cols: 1,
+            rows: 1,
+            frame_count: 1,
+            frame_w: 128,
+            frame_h: 128,
+            delay_ms: 200,
+        });
     }
-    Ok(())
+
+    Ok(states)
 }
 
 #[cfg(test)]
@@ -311,58 +312,63 @@ mod tests {
     use image::Rgba;
 
     #[test]
-    fn build_frame_prompts_returns_correct_counts() {
-        let prompts = build_frame_prompts("anime chibi girl");
-        let map: std::collections::HashMap<_, _> = prompts.into_iter().collect();
-        assert_eq!(map["idle"].len(), 4);
-        assert_eq!(map["walking"].len(), 6);
-        assert_eq!(map["waving"].len(), 4);
-        assert_eq!(map["working"].len(), 4);
-        let total: usize = map.values().map(|v| v.len()).sum();
-        assert_eq!(total, TOTAL_FRAMES);
+    fn build_state_specs_counts() {
+        let specs = build_state_specs();
+        let map: std::collections::HashMap<_, _> =
+            specs.iter().map(|s| (s.state.as_str(), s.frame_count)).collect();
+        assert_eq!(map["idle"],    4);
+        assert_eq!(map["walking"], 6);
+        assert_eq!(map["waving"],  4);
+        assert_eq!(map["working"], 4);
+    }
+
+    #[test]
+    fn state_spec_grid_layout() {
+        let specs = build_state_specs();
+        for spec in &specs {
+            assert_eq!(spec.cols, 2);
+            assert_eq!(spec.rows, (spec.frame_count + 1) / 2);
+            assert_eq!(spec.img_width(),  spec.cols as u32 * CELL_SIZE);
+            assert_eq!(spec.img_height(), spec.rows as u32 * CELL_SIZE);
+        }
     }
 
     #[test]
     fn build_pollinations_url_encodes_spaces() {
-        let url = build_pollinations_url("anime chibi girl");
+        let url = build_pollinations_url("anime chibi girl", 256, 256);
         assert!(url.starts_with("https://image.pollinations.ai/prompt/"));
         assert!(url.contains("anime%20chibi%20girl") || url.contains("anime+chibi+girl"));
-        assert!(url.contains("width=512"));
-        assert!(url.contains("height=512"));
-        assert!(url.contains("nologo=true"));
+        assert!(url.contains("width=256"));
+        assert!(url.contains("height=256"));
     }
 
     #[test]
     fn apply_chroma_key_removes_white_pixels() {
         let mut img = RgbaImage::new(2, 1);
-        img.put_pixel(0, 0, Rgba([255, 255, 255, 255])); // pure white → transparent
-        img.put_pixel(1, 0, Rgba([100, 50, 200, 255]));  // colored → stays
+        img.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+        img.put_pixel(1, 0, Rgba([100, 50, 200, 255]));
         apply_chroma_key(&mut img, 30);
-        assert_eq!(img.get_pixel(0, 0)[3], 0);   // transparent
-        assert_eq!(img.get_pixel(1, 0)[3], 255); // opaque
+        assert_eq!(img.get_pixel(0, 0)[3], 0);
+        assert_eq!(img.get_pixel(1, 0)[3], 255);
     }
 
     #[test]
     fn apply_chroma_key_keeps_near_white_below_threshold() {
         let mut img = RgbaImage::new(1, 1);
-        img.put_pixel(0, 0, Rgba([200, 200, 200, 255])); // grey, threshold=30 → stays
+        img.put_pixel(0, 0, Rgba([200, 200, 200, 255]));
         apply_chroma_key(&mut img, 30);
         assert_eq!(img.get_pixel(0, 0)[3], 255);
     }
 
     #[test]
-    fn assemble_gif_bytes_returns_valid_gif_header() {
-        // Two minimal 2x2 RGBA frames
-        let frame1 = RgbaImage::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
-        let frame2 = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 255, 255]));
-        let bytes = assemble_gif_bytes(vec![frame1, frame2], 10).unwrap();
-        // GIF magic bytes: GIF89a
-        assert_eq!(&bytes[0..6], b"GIF89a");
-    }
-
-    #[test]
-    fn assemble_gif_bytes_errors_on_empty_frames() {
-        let result = assemble_gif_bytes(vec![], 10);
-        assert!(result.is_err());
+    fn save_sprite_sheet_png_writes_correct_dimensions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sheet = RgbaImage::new(256, 256);
+        save_sprite_sheet_png(&dir.path().to_path_buf(), "pet-1", "idle", &sheet).unwrap();
+        let path = dir.path().join("pet-1").join("idle.png");
+        assert!(path.exists());
+        let loaded = image::open(&path).unwrap();
+        assert_eq!(loaded.width(), 256);
+        assert_eq!(loaded.height(), 256);
     }
 }

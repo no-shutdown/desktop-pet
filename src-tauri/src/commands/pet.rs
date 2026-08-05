@@ -44,7 +44,10 @@ fn delete_pet_from_dir(base_dir: &PathBuf, pet_id: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn save_pet(app: AppHandle, pet: Pet) -> Result<(), String> {
     let dir = pets_dir(&app)?;
-    write_pet_to_dir(&dir, &pet)
+    write_pet_to_dir(&dir, &pet)?;
+    use tauri::Emitter;
+    let _ = app.emit("pet-saved", &pet);
+    Ok(())
 }
 
 #[tauri::command]
@@ -62,19 +65,21 @@ pub fn delete_pet(app: AppHandle, pet_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PetFrames;
+    use crate::models::SpriteStateInfo;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn make_pet(id: &str) -> Pet {
+        let mut states = HashMap::new();
+        for s in &["idle", "walking", "waving", "working"] {
+            states.insert(s.to_string(), SpriteStateInfo {
+                cols: 2, rows: 2, frame_count: 4, frame_w: 128, frame_h: 128, delay_ms: 200,
+            });
+        }
         Pet {
             id: id.to_string(),
             name: "Test Pet".to_string(),
-            frames: PetFrames {
-                idle: "idle.gif".to_string(),
-                walking: "walking.gif".to_string(),
-                waving: "waving.gif".to_string(),
-                working: "working.gif".to_string(),
-            },
+            states,
             created_at: "2026-08-03T10:00:00Z".to_string(),
             prompt: "anime chibi".to_string(),
         }
