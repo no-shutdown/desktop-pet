@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 
 interface UploadStepProps {
   onNext: (photoDataUrl: string) => void;
+  onBack?: () => void;
 }
 
 const dropZoneStyle: CSSProperties = {
@@ -15,7 +16,7 @@ const dropZoneStyle: CSSProperties = {
   transition: 'border-color 0.2s',
 };
 
-export default function UploadStep({ onNext }: UploadStepProps) {
+export default function UploadStep({ onNext, onBack }: UploadStepProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -56,10 +57,10 @@ export default function UploadStep({ onNext }: UploadStepProps) {
           <>
             <div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
             <p style={{ color: '#718096', margin: 0 }}>
-              Drag &amp; drop or click to upload a photo
+              拖拽或点击上传参考照片
             </p>
             <p style={{ color: '#a0aec0', fontSize: 13, marginTop: 8 }}>
-              Supports JPG, PNG, WEBP
+              支持 JPG、PNG、WEBP
             </p>
           </>
         )}
@@ -73,7 +74,15 @@ export default function UploadStep({ onNext }: UploadStepProps) {
         />
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+        {onBack && (
+          <button
+            onClick={onBack}
+            style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: 'pointer', fontSize: 14 }}
+          >
+            返回首页
+          </button>
+        )}
         <button
           onClick={() => preview && onNext(preview)}
           disabled={!preview}
@@ -83,7 +92,7 @@ export default function UploadStep({ onNext }: UploadStepProps) {
             color: '#fff', cursor: preview ? 'pointer' : 'not-allowed', fontSize: 14,
           }}
         >
-          Next
+          下一步
         </button>
       </div>
     </div>

@@ -4,11 +4,11 @@ import type { PetState } from '../../../types/pet';
 
 const STATES: PetState[] = ['idle', 'walking', 'waving', 'working'];
 const STATE_LABELS: Record<PetState, string> = {
-  idle: 'Idle', walking: 'Walking', waving: 'Waving', working: 'Working',
+  idle: '待机', walking: '行走', waving: '招手', working: '工作',
 };
 const STATE_HINTS: Record<PetState, string> = {
-  idle: 'Standing still', walking: 'Moving / walking',
-  waving: 'Greeting / waving', working: 'Focused / typing',
+  idle: '静止站立', walking: '移动 / 行走',
+  waving: '打招呼 / 挥手', working: '专注 / 打字',
 };
 
 interface DirectUploadStepProps {
@@ -55,7 +55,7 @@ export default function DirectUploadStep({ onNext, onBack }: DirectUploadStepPro
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <p style={{ color: '#718096', margin: 0, fontSize: 14 }}>
-        Upload one image or GIF per animation state. Accepts .gif .png .jpg .webp
+        每个动画状态上传一张图片或 GIF。支持 .gif .png .jpg .webp
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -108,7 +108,7 @@ export default function DirectUploadStep({ onNext, onBack }: DirectUploadStepPro
           onClick={onBack}
           style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: 'pointer' }}
         >
-          Back
+          返回首页
         </button>
         <button
           onClick={handleNext}
@@ -119,7 +119,7 @@ export default function DirectUploadStep({ onNext, onBack }: DirectUploadStepPro
             color: '#fff', cursor: allFilled && !saving ? 'pointer' : 'not-allowed',
           }}
         >
-          {saving ? 'Saving…' : 'Next'}
+          {saving ? '保存中…' : '下一步'}
         </button>
       </div>
     </div>

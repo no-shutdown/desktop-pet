@@ -7,7 +7,6 @@ import GenerateStep from './steps/GenerateStep';
 import DirectUploadStep from './steps/DirectUploadStep';
 import PreviewStep from './steps/PreviewStep';
 import SaveStep from './steps/SaveStep';
-import SettingsPanel from './SettingsPanel';
 
 type Mode = 'choose' | 'ai' | 'manual';
 type Step = 'upload' | 'analyze' | 'generate' | 'direct-upload' | 'preview' | 'save';
@@ -15,8 +14,8 @@ type Step = 'upload' | 'analyze' | 'generate' | 'direct-upload' | 'preview' | 's
 const AI_STEPS: Step[] = ['upload', 'analyze', 'generate', 'preview', 'save'];
 const MANUAL_STEPS: Step[] = ['direct-upload', 'preview', 'save'];
 const STEP_LABELS: Record<Step, string> = {
-  upload: 'Upload', analyze: 'Analyze', generate: 'Generate',
-  'direct-upload': 'Upload GIFs', preview: 'Preview', save: 'Save',
+  upload: '上传照片', analyze: '分析角色', generate: '生成动画',
+  'direct-upload': '上传动画', preview: '预览', save: '保存',
 };
 
 export default function CreatorWindow() {
@@ -24,7 +23,6 @@ export default function CreatorWindow() {
   const [step, setStep] = useState<Step>('upload');
   const [data, setData] = useState<WizardData>(INITIAL_WIZARD_DATA);
   const [savedPet, setSavedPet] = useState<Pet | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
 
   function updateData(patch: Partial<WizardData>) {
     setData((prev) => ({ ...prev, ...patch }));
@@ -42,19 +40,9 @@ export default function CreatorWindow() {
   if (mode === 'choose') {
     return (
       <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
-        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-          <h1 style={{ margin: 0, fontSize: 24 }}>Create Your Pet</h1>
-          <button
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-            style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#a0aec0', padding: 4 }}
-          >
-            ⚙
-          </button>
-        </div>
+        <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>创建你的桌面宠物</h1>
         <p style={{ color: '#718096', marginBottom: 48 }}>
-          Turn a photo into an animated desktop companion.
+          把一张照片变成在桌面上活动的动态伴侣。
         </p>
 
         <div style={{ display: 'flex', gap: 24 }}>
@@ -76,10 +64,10 @@ export default function CreatorWindow() {
           >
             <div style={{ fontSize: 40, marginBottom: 12 }}>🤖</div>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>
-              Generate with AI
+              AI 自动生成
             </div>
             <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>
-              Upload a reference photo and let AI generate all animation frames automatically.
+              上传一张参考照片，AI 自动分析角色并生成全部动画帧。
             </div>
           </button>
 
@@ -101,10 +89,10 @@ export default function CreatorWindow() {
           >
             <div style={{ fontSize: 40, marginBottom: 12 }}>🎨</div>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>
-              Upload My Own GIFs
+              上传我的动画
             </div>
             <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>
-              Already have animations? Upload one image or GIF per state and use them directly.
+              已有动画素材？每个状态上传一张图片或 GIF 即可直接使用。
             </div>
           </button>
         </div>
@@ -114,19 +102,9 @@ export default function CreatorWindow() {
 
   return (
     <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-        <h1 style={{ margin: 0, fontSize: 24 }}>Create Your Pet</h1>
-        <button
-          onClick={() => setShowSettings(true)}
-          title="Settings"
-          style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#a0aec0', padding: 4 }}
-        >
-          ⚙
-        </button>
-      </div>
+      <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>创建你的桌面宠物</h1>
       <p style={{ color: '#718096', marginBottom: 32 }}>
-        Turn a photo into an animated desktop companion.
+        把一张照片变成在桌面上活动的动态伴侣。
       </p>
 
       {/* Step indicators */}
@@ -158,13 +136,13 @@ export default function CreatorWindow() {
       {savedPet ? (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <div style={{ fontSize: 56, marginBottom: 16 }}>🎉</div>
-          <h2 style={{ marginBottom: 8 }}>{savedPet.name} is ready!</h2>
-          <p style={{ color: '#718096' }}>Your pet is saved and available in the system tray.</p>
+          <h2 style={{ marginBottom: 8 }}>{savedPet.name} 已就绪！</h2>
+          <p style={{ color: '#718096' }}>宠物已保存，可在系统托盘中查看。</p>
           <button
             onClick={reset}
             style={{ marginTop: 16, padding: '10px 24px', borderRadius: 8, border: 'none', background: '#4f8ef7', color: '#fff', cursor: 'pointer', fontSize: 15 }}
           >
-            Create Another
+            再创建一个
           </button>
         </div>
       ) : (
@@ -172,6 +150,7 @@ export default function CreatorWindow() {
           {step === 'upload' && (
             <UploadStep
               onNext={(photoDataUrl) => { updateData({ photoDataUrl }); setStep('analyze'); }}
+              onBack={() => { setMode('choose'); }}
             />
           )}
           {step === 'analyze' && data.photoDataUrl && (

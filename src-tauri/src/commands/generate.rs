@@ -21,10 +21,19 @@ fn state_action_prompt(state: &str) -> &str {
 }
 
 /// Builds the full Pollinations URL for one frame.
+/// Requests 512×512 (Flux minimum viable size) and truncates prompt to 400 chars,
+/// respecting UTF-8 character boundaries to avoid panics on multi-byte characters.
 pub fn build_pollinations_url(prompt: &str) -> String {
-    let encoded = urlencoding::encode(prompt);
+    let truncated = if prompt.len() > 400 {
+        let mut end = 400;
+        while !prompt.is_char_boundary(end) { end -= 1; }
+        &prompt[..end]
+    } else {
+        prompt
+    };
+    let encoded = urlencoding::encode(truncated);
     format!(
-        "https://image.pollinations.ai/prompt/{}?width=128&height=128&nologo=true&model=flux",
+        "https://image.pollinations.ai/prompt/{}?width=512&height=512&nologo=true&model=flux",
         encoded
     )
 }
@@ -53,10 +62,11 @@ pub fn apply_chroma_key(img: &mut RgbaImage, threshold: u8) {
     }
 }
 
-/// Decodes JPEG bytes into an RGBA image.
+/// Decodes image bytes (JPEG or PNG) into a 128×128 RGBA image.
 pub fn decode_jpeg(bytes: &[u8]) -> Result<RgbaImage, String> {
     let img = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
-    Ok(img.to_rgba8())
+    let resized = img.resize_exact(128, 128, image::imageops::FilterType::Lanczos3);
+    Ok(resized.to_rgba8())
 }
 
 /// Encodes a list of RGBA frames into an animated GIF (returned as bytes).
@@ -85,12 +95,28 @@ pub fn assemble_gif_bytes(frames: Vec<RgbaImage>, delay_cs: u16) -> Result<Vec<u
 }
 
 /// Downloads a single image from a URL, returns raw bytes.
+/// Uses a 60-second timeout per attempt and retries up to 3 times.
 pub async fn download_image(url: &str) -> Result<Vec<u8>, String> {
-    let response = reqwest::get(url).await.map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {} downloading image", response.status()));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut last_err = String::new();
+    for attempt in 0..3u64 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
+        }
+        let response = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => { last_err = e.to_string(); continue; }
+        };
+        if response.status().is_success() {
+            return response.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string());
+        }
+        last_err = format!("HTTP {} downloading image", response.status());
     }
-    response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+    Err(last_err)
 }
 
 /// Fetches image bytes for a single frame from SiliconFlow.
@@ -185,24 +211,40 @@ pub async fn generate_and_assemble(
         let mut rgba_frames: Vec<RgbaImage> = Vec::new();
 
         for prompt in frame_prompts {
-            let bytes = match provider {
+            let fetch_result = match provider {
                 "siliconflow" => {
                     let key = image_api_key.as_deref()
                         .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
-                    fetch_image_siliconflow(prompt, key).await?
+                    fetch_image_siliconflow(prompt, key).await
                 }
                 "localsd" => {
                     let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
-                    fetch_image_localsd(prompt, url).await?
+                    fetch_image_localsd(prompt, url).await
                 }
                 _ => {
+                    // 3-second gap between Pollinations requests to avoid server overload / rate limits
+                    if current > 0 {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
                     let url = build_pollinations_url(prompt);
-                    download_image(&url).await?
+                    download_image(&url).await
                 }
             };
 
-            let mut rgba = decode_jpeg(&bytes)?;
-            apply_chroma_key(&mut rgba, 30);
+            let rgba = match fetch_result.and_then(|b| decode_jpeg(&b)) {
+                Ok(mut img) => {
+                    apply_chroma_key(&mut img, 30);
+                    img
+                }
+                Err(e) => {
+                    // Single frame failed — use duplicate of last frame (or blank) and keep going
+                    let _ = app.emit("generation-warning", serde_json::json!({
+                        "frame": current + 1,
+                        "error": e,
+                    }));
+                    rgba_frames.last().cloned().unwrap_or_else(|| RgbaImage::new(128, 128))
+                }
+            };
             rgba_frames.push(rgba);
 
             current += 1;
@@ -285,8 +327,8 @@ mod tests {
         let url = build_pollinations_url("anime chibi girl");
         assert!(url.starts_with("https://image.pollinations.ai/prompt/"));
         assert!(url.contains("anime%20chibi%20girl") || url.contains("anime+chibi+girl"));
-        assert!(url.contains("width=128"));
-        assert!(url.contains("height=128"));
+        assert!(url.contains("width=512"));
+        assert!(url.contains("height=512"));
         assert!(url.contains("nologo=true"));
     }
 

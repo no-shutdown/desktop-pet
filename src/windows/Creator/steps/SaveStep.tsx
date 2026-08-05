@@ -46,11 +46,11 @@ export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStep
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, alignItems: 'center', padding: '32px 0' }}>
       <div style={{ fontSize: 48 }}>💾</div>
-      <p style={{ color: '#718096', margin: 0 }}>Give your pet a name to save it.</p>
+      <p style={{ color: '#718096', margin: 0 }}>给你的宠物起个名字吧。</p>
 
       <input
         type="text"
-        placeholder="Pet name…"
+        placeholder="宠物名称…"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -69,7 +69,7 @@ export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStep
           disabled={saving}
           style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: saving ? 'not-allowed' : 'pointer' }}
         >
-          Back
+          上一步
         </button>
         <button
           onClick={handleSave}
@@ -80,7 +80,7 @@ export default function SaveStep({ petId, prompt, onComplete, onBack }: SaveStep
             color: '#fff', cursor: name.trim() && !saving ? 'pointer' : 'not-allowed',
           }}
         >
-          {saving ? 'Saving…' : 'Save Pet'}
+          {saving ? '保存中…' : '保存宠物'}
         </button>
       </div>
     </div>

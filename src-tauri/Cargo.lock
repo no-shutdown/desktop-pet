@@ -603,6 +603,7 @@ dependencies = [
  "tauri-plugin-process",
  "tempfile",
  "tiny_http",
+ "tokio",
  "urlencoding",
  "uuid",
 ]
@@ -1566,6 +1567,7 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
+ "png 0.18.1",
  "zune-core",
  "zune-jpeg",
 ]

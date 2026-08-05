@@ -51,7 +51,6 @@ pub fn run() {
             // Start local HTTP event receiver for Claude Code hooks
             let event_app = app.handle().clone();
             std::thread::spawn(move || {
-                use std::io::Read;
                 use tauri::Emitter;
 
                 let server = match tiny_http::Server::http("127.0.0.1:29513") {
