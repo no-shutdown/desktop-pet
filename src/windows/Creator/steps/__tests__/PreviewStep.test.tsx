@@ -20,10 +20,10 @@ describe('PreviewStep', () => {
 
   it('renders four state labels', async () => {
     const { findByText } = render(<PreviewStep {...defaultProps} />);
-    expect(await findByText(/idle/i)).toBeTruthy();
-    expect(await findByText(/walking/i)).toBeTruthy();
-    expect(await findByText(/waving/i)).toBeTruthy();
-    expect(await findByText(/working/i)).toBeTruthy();
+    expect(await findByText('待机')).toBeTruthy();
+    expect(await findByText('行走')).toBeTruthy();
+    expect(await findByText('招手')).toBeTruthy();
+    expect(await findByText('工作')).toBeTruthy();
   });
 
   it('renders four GIF preview images', async () => {
@@ -34,7 +34,7 @@ describe('PreviewStep', () => {
 
   it('renders Next and Back buttons', () => {
     render(<PreviewStep {...defaultProps} />);
-    expect(screen.getByRole('button', { name: /next/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /back/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /下一步/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /上一步/ })).toBeTruthy();
   });
 });

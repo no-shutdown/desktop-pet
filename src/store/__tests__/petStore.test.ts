@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { usePetStore } from '../petStore';
-import type { Pet } from '../../types/pet';
+import type { Pet, SpriteStateInfo } from '../../types/pet';
+
+const META: SpriteStateInfo = { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 };
 
 const makePet = (): Pet => ({
   id: 'test',
   name: 'Test',
-  frames: { idle: 'i.gif', walking: 'w.gif', waving: 'wv.gif', working: 'wk.gif' },
+  states: {
+    idle:    META,
+    walking: { cols: 2, rows: 3, frameCount: 6, frameW: 128, frameH: 128, delayMs: 150 },
+    waving:  { ...META, delayMs: 150 },
+    working: META,
+  },
   createdAt: '2026-08-03T10:00:00Z',
   prompt: 'chibi',
 });

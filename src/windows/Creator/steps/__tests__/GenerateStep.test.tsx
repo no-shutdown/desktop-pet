@@ -7,6 +7,19 @@ const { mockInvoke, mockListen } = vi.hoisted(() => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mockListen }));
+vi.mock('../../../../lib/settings', () => ({
+  loadSettings: vi.fn().mockReturnValue({
+    visionProvider: 'skip',
+    visionApiKey: '',
+    visionModel: '',
+    imageProvider: 'pollinations',
+    imageApiKey: '',
+    imageModel: '',
+    localSdUrl: '',
+  }),
+  saveSettings: vi.fn(),
+  SILICONFLOW_MODELS: [],
+}));
 
 import GenerateStep from '../GenerateStep';
 
@@ -24,12 +37,12 @@ describe('GenerateStep', () => {
 
   it('shows Generate button before starting', () => {
     render(<GenerateStep {...defaultProps} />);
-    expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /开始生成/ })).toBeTruthy();
   });
 
   it('clicking Generate calls invoke with generate_and_assemble', async () => {
     render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }));
+    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith(
         'generate_and_assemble',
@@ -44,10 +57,10 @@ describe('GenerateStep', () => {
     mockInvoke.mockReturnValue(new Promise<void>((res) => { resolve = res; }));
 
     render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }));
+    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
 
     await waitFor(() => {
-      expect(screen.getByText(/generating/i)).toBeTruthy();
+      expect(screen.getByText(/正在生成/)).toBeTruthy();
     });
 
     resolve!();
@@ -56,16 +69,16 @@ describe('GenerateStep', () => {
   it('shows Next button after generation completes', async () => {
     mockInvoke.mockResolvedValue(undefined);
     render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }));
+    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /next/i })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /下一步/ })).toBeTruthy();
     });
   });
 
   it('calls onBack when Back is clicked', () => {
     const onBack = vi.fn();
     render(<GenerateStep {...defaultProps} onBack={onBack} />);
-    fireEvent.click(screen.getByRole('button', { name: /back/i }));
+    fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 });

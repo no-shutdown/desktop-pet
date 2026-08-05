@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { PetState, SpriteStateInfo } from '../../../../types/pet';
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
@@ -10,10 +11,18 @@ vi.mock('@tauri-apps/api/path', () => ({
 
 import SaveStep from '../SaveStep';
 
+const STATES: Record<PetState, SpriteStateInfo> = {
+  idle:    { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 },
+  walking: { cols: 2, rows: 3, frameCount: 6, frameW: 128, frameH: 128, delayMs: 150 },
+  waving:  { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 150 },
+  working: { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 },
+};
+
 describe('SaveStep', () => {
   const defaultProps = {
     petId: 'abc-123',
     prompt: 'anime chibi girl',
+    states: STATES,
     onComplete: vi.fn(),
     onBack: vi.fn(),
   };
@@ -25,26 +34,26 @@ describe('SaveStep', () => {
 
   it('renders pet name input', () => {
     render(<SaveStep {...defaultProps} />);
-    expect(screen.getByPlaceholderText(/name/i)).toBeTruthy();
+    expect(screen.getByPlaceholderText(/宠物名称/)).toBeTruthy();
   });
 
   it('Save button is disabled when name is empty', () => {
     render(<SaveStep {...defaultProps} />);
-    const btn = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+    const btn = screen.getByRole('button', { name: /保存宠物/ }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
   });
 
   it('Save button enables after typing a name', () => {
     render(<SaveStep {...defaultProps} />);
-    fireEvent.change(screen.getByPlaceholderText(/name/i), { target: { value: 'Chibi' } });
-    const btn = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+    fireEvent.change(screen.getByPlaceholderText(/宠物名称/), { target: { value: 'Chibi' } });
+    const btn = screen.getByRole('button', { name: /保存宠物/ }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });
 
   it('clicking Save calls invoke save_pet with correct data', async () => {
     render(<SaveStep {...defaultProps} />);
-    fireEvent.change(screen.getByPlaceholderText(/name/i), { target: { value: 'Chibi' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    fireEvent.change(screen.getByPlaceholderText(/宠物名称/), { target: { value: 'Chibi' } });
+    fireEvent.click(screen.getByRole('button', { name: /保存宠物/ }));
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('save_pet', expect.objectContaining({
         pet: expect.objectContaining({ id: 'abc-123', name: 'Chibi', prompt: 'anime chibi girl' }),
@@ -55,7 +64,7 @@ describe('SaveStep', () => {
   it('calls onBack when Back is clicked', () => {
     const onBack = vi.fn();
     render(<SaveStep {...defaultProps} onBack={onBack} />);
-    fireEvent.click(screen.getByRole('button', { name: /back/i }));
+    fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 });

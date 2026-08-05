@@ -12,7 +12,7 @@ describe('UploadStep', () => {
 
   it('renders drop zone text', () => {
     render(<UploadStep onNext={onNext} />);
-    expect(screen.getByText(/drag.*drop|upload/i)).toBeTruthy();
+    expect(screen.getByText(/拖拽|上传/)).toBeTruthy();
   });
 
   it('shows preview after file selected', () => {
@@ -44,7 +44,7 @@ describe('UploadStep', () => {
 
   it('Next button is disabled until a photo is selected', () => {
     render(<UploadStep onNext={onNext} />);
-    const btn = screen.getByRole('button', { name: /next/i });
+    const btn = screen.getByRole('button', { name: /下一步/ });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 });
