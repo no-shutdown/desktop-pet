@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Pet } from '../../types/pet';
+import type { Pet, SpriteStateInfo } from '../../types/pet';
 
 const mockInvoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({
@@ -8,10 +8,12 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { petCommands } from '../pet-commands';
 
+const META: SpriteStateInfo = { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 };
+
 const mockPet: Pet = {
   id: 'test-id',
   name: 'Test',
-  frames: { idle: 'i.gif', walking: 'w.gif', waving: 'wv.gif', working: 'wk.gif' },
+  states: { idle: META, walking: META, waving: META, working: META },
   createdAt: '2026-08-03T10:00:00Z',
   prompt: 'chibi',
 };

@@ -20,8 +20,9 @@ export default function SpriteAnimator({ sheetSrc, meta, displayW, displayH }: S
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const rawCtx = canvas.getContext('2d');
+    if (!rawCtx) return;
+    const ctx = rawCtx;
 
     frameRef.current = 0;
     lastTsRef.current = 0;
