@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { PetState } from '../../../types/pet';
+import type { PetState, SpriteStateInfo } from '../../../types/pet';
 
 const STATES: PetState[] = ['idle', 'walking', 'waving', 'working'];
 const STATE_LABELS: Record<PetState, string> = {
@@ -12,7 +12,7 @@ const STATE_HINTS: Record<PetState, string> = {
 };
 
 interface DirectUploadStepProps {
-  onNext: (petId: string) => void;
+  onNext: (petId: string, states: Record<PetState, SpriteStateInfo>) => void;
   onBack: () => void;
 }
 
@@ -37,14 +37,14 @@ export default function DirectUploadStep({ onNext, onBack }: DirectUploadStepPro
     setError(null);
     try {
       const petId = crypto.randomUUID();
-      await invoke('save_custom_frames', {
+      const states = await invoke<Record<PetState, SpriteStateInfo>>('save_custom_frames', {
         petId,
         idle: files.idle!,
         walking: files.walking!,
         waving: files.waving!,
         working: files.working!,
       });
-      onNext(petId);
+      onNext(petId, states);
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {
