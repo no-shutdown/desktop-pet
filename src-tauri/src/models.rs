@@ -1,21 +1,23 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct PetFrames {
-    pub idle: String,
-    pub walking: String,
-    pub waving: String,
-    pub working: String,
+#[serde(rename_all = "camelCase")]
+pub struct SpriteStateInfo {
+    pub cols: usize,
+    pub rows: usize,
+    pub frame_count: usize,
+    pub frame_w: u32,
+    pub frame_h: u32,
+    pub delay_ms: u32,
 }
 
-// rename_all = "camelCase" makes created_at serialize as createdAt,
-// matching the TypeScript Pet interface
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pet {
     pub id: String,
     pub name: String,
-    pub frames: PetFrames,
+    pub states: HashMap<String, SpriteStateInfo>,
     pub created_at: String,
     pub prompt: String,
 }
@@ -24,16 +26,19 @@ pub struct Pet {
 mod tests {
     use super::*;
 
+    fn make_sprite_state() -> SpriteStateInfo {
+        SpriteStateInfo { cols: 2, rows: 2, frame_count: 4, frame_w: 128, frame_h: 128, delay_ms: 200 }
+    }
+
     fn make_pet() -> Pet {
+        let mut states = HashMap::new();
+        for s in &["idle", "walking", "waving", "working"] {
+            states.insert(s.to_string(), make_sprite_state());
+        }
         Pet {
             id: "test-id".to_string(),
             name: "My Pet".to_string(),
-            frames: PetFrames {
-                idle: "idle.gif".to_string(),
-                walking: "walking.gif".to_string(),
-                waving: "waving.gif".to_string(),
-                working: "working.gif".to_string(),
-            },
+            states,
             created_at: "2026-08-03T10:00:00Z".to_string(),
             prompt: "anime chibi girl".to_string(),
         }
@@ -48,11 +53,21 @@ mod tests {
     }
 
     #[test]
-    fn pet_frames_has_all_four_states() {
+    fn pet_has_all_four_states() {
         let pet = make_pet();
-        assert!(!pet.frames.idle.is_empty());
-        assert!(!pet.frames.walking.is_empty());
-        assert!(!pet.frames.waving.is_empty());
-        assert!(!pet.frames.working.is_empty());
+        assert!(pet.states.contains_key("idle"));
+        assert!(pet.states.contains_key("walking"));
+        assert!(pet.states.contains_key("waving"));
+        assert!(pet.states.contains_key("working"));
+    }
+
+    #[test]
+    fn sprite_state_info_serializes_camel_case() {
+        let info = make_sprite_state();
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("frameCount"));
+        assert!(json.contains("frameW"));
+        assert!(json.contains("frameH"));
+        assert!(json.contains("delayMs"));
     }
 }
