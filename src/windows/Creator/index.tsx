@@ -7,6 +7,7 @@ import GenerateStep from './steps/GenerateStep';
 import DirectUploadStep from './steps/DirectUploadStep';
 import PreviewStep from './steps/PreviewStep';
 import SaveStep from './steps/SaveStep';
+import SettingsPanel from './SettingsPanel';
 
 type Mode = 'choose' | 'ai' | 'manual';
 type Step = 'upload' | 'analyze' | 'generate' | 'direct-upload' | 'preview' | 'save';
@@ -23,6 +24,7 @@ export default function CreatorWindow() {
   const [step, setStep] = useState<Step>('upload');
   const [data, setData] = useState<WizardData>(INITIAL_WIZARD_DATA);
   const [savedPet, setSavedPet] = useState<Pet | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   function updateData(patch: Partial<WizardData>) {
     setData((prev) => ({ ...prev, ...patch }));
@@ -37,10 +39,27 @@ export default function CreatorWindow() {
   const currentSteps = mode === 'ai' ? AI_STEPS : MANUAL_STEPS;
   const stepIndex = currentSteps.indexOf(step);
 
+  if (showSettings) {
+    return (
+      <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto', height: '100vh', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+        <SettingsPanel onBack={() => setShowSettings(false)} />
+      </div>
+    );
+  }
+
   if (mode === 'choose') {
     return (
       <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
-        <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>创建你的桌面宠物</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+          <h1 style={{ margin: 0, fontSize: 24 }}>创建你的桌面宠物</h1>
+          <button
+            onClick={() => setShowSettings(true)}
+            title="配置"
+            style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', color: '#718096', fontSize: 18, lineHeight: 1 }}
+          >
+            ⚙️
+          </button>
+        </div>
         <p style={{ color: '#718096', marginBottom: 48 }}>
           把一张照片变成在桌面上活动的动态伴侣。
         </p>
@@ -102,7 +121,16 @@ export default function CreatorWindow() {
 
   return (
     <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
-      <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>创建你的桌面宠物</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+        <h1 style={{ margin: 0, fontSize: 24 }}>创建你的桌面宠物</h1>
+        <button
+          onClick={() => setShowSettings(true)}
+          title="配置"
+          style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', color: '#718096', fontSize: 18, lineHeight: 1 }}
+        >
+          ⚙️
+        </button>
+      </div>
       <p style={{ color: '#718096', marginBottom: 32 }}>
         把一张照片变成在桌面上活动的动态伴侣。
       </p>
@@ -164,13 +192,13 @@ export default function CreatorWindow() {
           {step === 'generate' && (
             <GenerateStep
               prompt={data.prompt}
-              onNext={(petId) => { updateData({ petId }); setStep('preview'); }}
+              onNext={(petId, states) => { updateData({ petId, petStates: states }); setStep('preview'); }}
               onBack={() => setStep('analyze')}
             />
           )}
           {step === 'direct-upload' && (
             <DirectUploadStep
-              onNext={(petId) => { updateData({ petId }); setStep('preview'); }}
+              onNext={(petId, states) => { updateData({ petId, petStates: states }); setStep('preview'); }}
               onBack={() => setMode('choose')}
             />
           )}
@@ -181,10 +209,11 @@ export default function CreatorWindow() {
               onBack={() => mode === 'ai' ? setStep('generate') : setStep('direct-upload')}
             />
           )}
-          {step === 'save' && data.petId && (
+          {step === 'save' && data.petId && data.petStates && (
             <SaveStep
               petId={data.petId}
               prompt={data.prompt}
+              states={data.petStates}
               onComplete={(pet) => setSavedPet(pet)}
               onBack={() => setStep('preview')}
             />
