@@ -5,6 +5,9 @@
   "windows": ["creator", "pet"],
   "permissions": [
     "core:default",
-    "process:default"
+    "process:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-show"
   ]
 }

@@ -17,12 +17,15 @@ export default function SpriteAnimator({ sheetSrc, meta, displayW, displayH }: S
   const w = displayW ?? meta.frameW;
   const h = displayH ?? meta.frameH;
 
+  // Destructure to primitives so the effect only re-runs when values actually change,
+  // not every time the parent renders with a new meta object reference.
+  const { cols, frameCount, frameW, frameH, delayMs } = meta;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const rawCtx = canvas.getContext('2d');
-    if (!rawCtx) return;
-    const ctx = rawCtx;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
     frameRef.current = 0;
     lastTsRef.current = 0;
@@ -32,12 +35,12 @@ export default function SpriteAnimator({ sheetSrc, meta, displayW, displayH }: S
 
     img.onload = () => {
       function tick(ts: number) {
-        if (ts - lastTsRef.current >= meta.delayMs) {
-          const col = frameRef.current % meta.cols;
-          const row = Math.floor(frameRef.current / meta.cols);
+        if (ts - lastTsRef.current >= delayMs) {
+          const col = frameRef.current % cols;
+          const row = Math.floor(frameRef.current / cols);
           ctx.clearRect(0, 0, w, h);
-          ctx.drawImage(img, col * meta.frameW, row * meta.frameH, meta.frameW, meta.frameH, 0, 0, w, h);
-          frameRef.current = (frameRef.current + 1) % meta.frameCount;
+          ctx.drawImage(img, col * frameW, row * frameH, frameW, frameH, 0, 0, w, h);
+          frameRef.current = (frameRef.current + 1) % frameCount;
           lastTsRef.current = ts;
         }
         rafRef.current = requestAnimationFrame(tick);
@@ -51,14 +54,15 @@ export default function SpriteAnimator({ sheetSrc, meta, displayW, displayH }: S
       cancelAnimationFrame(rafRef.current);
       img.onload = null;
     };
-  }, [sheetSrc, meta, w, h]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetSrc, cols, frameCount, frameW, frameH, delayMs, w, h]);
 
   return (
     <canvas
       ref={canvasRef}
       width={w}
       height={h}
-      style={{ imageRendering: 'pixelated', display: 'block' }}
+      style={{ display: 'block', width: `${w}px`, height: `${h}px`, imageRendering: 'pixelated' }}
     />
   );
 }

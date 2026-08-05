@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -7,7 +7,6 @@ import type { MouseEvent } from 'react';
 import ContextMenu from './ContextMenu';
 import SpeechBubble from './SpeechBubble';
 import PetPicker from './PetPicker';
-import { useDrag } from './useDrag';
 import { usePetStore } from '../../store/petStore';
 import { PluginSandbox } from '../../lib/plugin-sandbox';
 import { SCHEDULE_REMINDER_CODE, CLAUDE_CODE_PROGRESS_CODE } from '../../lib/bundled-plugins';
@@ -16,7 +15,6 @@ import SpriteAnimator from './SpriteAnimator';
 import { type Pet, type PetState } from '../../types/pet';
 
 export default function PetWindow() {
-  const { onMouseDown } = useDrag();
   const { petState, setPetState, activePet, setActivePet } = usePetStore();
   const [menu, setMenu] = useState<{ x: number; y: number; visible: boolean }>({
     x: 0, y: 0, visible: false,
@@ -25,7 +23,6 @@ export default function PetWindow() {
   const [showPicker, setShowPicker] = useState(false);
   const [allPets, setAllPets] = useState<Pet[]>([]);
   const [petsDir, setPetsDir] = useState<string | null>(null);
-  const isDragging = useRef(false);
 
   const handleHideBubble = useCallback(() => setBubbleText(null), []);
 
@@ -38,6 +35,14 @@ export default function PetWindow() {
       if (savedPos) {
         await win.setPosition(new PhysicalPosition(savedPos.x, savedPos.y));
       }
+
+      let moveTimer: ReturnType<typeof setTimeout> | null = null;
+      const unlistenMove = await win.onMoved(({ payload: pos }) => {
+        if (moveTimer !== null) clearTimeout(moveTimer);
+        moveTimer = setTimeout(() => {
+          invoke('save_window_position', { position: { x: pos.x, y: pos.y } });
+        }, 300);
+      });
 
       async function loadPets() {
         try {
@@ -111,6 +116,8 @@ export default function PetWindow() {
         unlisten();
         unlistenPetSaved();
         unlistenShow();
+        unlistenMove();
+        if (moveTimer !== null) clearTimeout(moveTimer);
       };
     }
 
@@ -120,6 +127,7 @@ export default function PetWindow() {
 
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY, visible: true });
   };
 
@@ -140,18 +148,17 @@ export default function PetWindow() {
     setShowPicker(true);
   }
 
-  async function handleMouseDown(e: MouseEvent) {
-    if (showPicker) return;
-    isDragging.current = true;
-    await onMouseDown(e);
-    isDragging.current = false;
-  }
+  const handleMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0 || showPicker) return;
+    e.preventDefault();
+    void getCurrentWindow().startDragging();
+  };
 
   return (
     <div
-      style={{ width: 200, height: 240, background: 'transparent', overflow: 'visible', cursor: 'grab', position: 'relative' }}
+      style={{ width: 128, height: 160, background: 'transparent', overflow: 'visible', cursor: 'grab', position: 'relative' }}
       onMouseDown={handleMouseDown}
-      onMouseEnter={() => { if (!showPicker && !isDragging.current) setPetState('waving'); }}
+      onMouseEnter={() => { if (!showPicker) setPetState('waving'); }}
       onContextMenu={handleContextMenu}
     >
       <SpeechBubble text={bubbleText} onHide={handleHideBubble} />
@@ -159,8 +166,8 @@ export default function PetWindow() {
         <SpriteAnimator
           sheetSrc={convertFileSrc(`${petsDir}/${activePet.id}/${petState}.png`)}
           meta={activePet.states[petState]}
-          displayW={200}
-          displayH={200}
+          displayW={128}
+          displayH={128}
         />
       )}
 

@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use crate::models::SpriteStateInfo;
 
 pub const FRAME_COUNTS: &[(&str, usize)] = &[
-    ("idle",    4),
-    ("walking", 6),
-    ("waving",  4),
-    ("working", 4),
+    ("idle",    8),
+    ("walking", 8),
+    ("waving",  8),
+    ("working", 6),
 ];
 
 pub const TOTAL_STATES: usize = FRAME_COUNTS.len();
@@ -20,6 +20,55 @@ fn state_action_prompt(state: &str) -> &str {
         "waving"  => "waving hand high with cheerful big smile, arm raised above head",
         "working" => "focused working pose, leaning forward slightly, thinking or typing expression",
         _         => "neutral pose",
+    }
+}
+
+fn frame_phase(state: &str, frame_idx: usize) -> &'static str {
+    const IDLE: &[&str] = &[
+        "relaxed neutral standing, arms at sides, looking forward",
+        "very slight exhale, shoulders gently settled, peaceful expression",
+        "head very slightly tilted left, arms at sides, content look",
+        "weight subtly shifting, natural breathing, soft smile",
+        "neutral stance returning, arms at sides, calm expression",
+        "gentle inhale, shoulders barely raised, serene face",
+        "head very slightly tilted right, arms relaxed, gentle smile",
+        "fully upright neutral, grounded stance, soft forward gaze",
+    ];
+    const WALKING: &[&str] = &[
+        "left foot stepping forward, right arm swinging forward, striding",
+        "feet close mid-stride, arms passing center, weight shifting",
+        "right foot stepping forward, left arm swinging forward, in motion",
+        "feet close mid-stride, arms at sides, transferring weight",
+        "left foot forward again, right arm forward, confident step",
+        "mid-stride bounce, arms in motion, energetic walk",
+        "right foot stepping forward, left arm swinging, natural gait",
+        "mid-stride transition, arms settling, smooth walking rhythm",
+    ];
+    const WAVING: &[&str] = &[
+        "right arm raised, hand tilted to the left, big cheerful smile",
+        "right arm raised high, hand at top center, bright happy expression",
+        "right arm raised, hand tilted to the right, joyful waving",
+        "right arm raised, hand centered at peak, enthusiastic smile",
+        "arm raised, hand sweeping left, beaming grin",
+        "arm raised high, hand at center, delighted expression",
+        "arm raised, hand sweeping right, warm cheerful wave",
+        "arm at full height, hand centered, very happy expression",
+    ];
+    const WORKING: &[&str] = &[
+        "leaning slightly forward, fingers near keyboard, focused expression",
+        "typing intently, fingers on keys, very concentrated look",
+        "pausing to think, hand near chin, thoughtful gaze at screen",
+        "slight nod of understanding, pen near chin, pondering",
+        "typing quickly, leaning in, determined focused expression",
+        "leaning back slightly, reviewing work, satisfied thoughtful look",
+    ];
+
+    match state {
+        "idle"    => IDLE[frame_idx % IDLE.len()],
+        "walking" => WALKING[frame_idx % WALKING.len()],
+        "waving"  => WAVING[frame_idx % WAVING.len()],
+        "working" => WORKING[frame_idx % WORKING.len()],
+        _         => "natural pose",
     }
 }
 
@@ -43,6 +92,23 @@ pub fn build_state_specs() -> Vec<StateSpec> {
     }).collect()
 }
 
+pub fn build_frame_prompt(base_prompt: &str, state: &str, frame_idx: usize) -> String {
+    let truncated = if base_prompt.len() > 300 {
+        let mut end = 300;
+        while !base_prompt.is_char_boundary(end) { end -= 1; }
+        &base_prompt[..end]
+    } else {
+        base_prompt
+    };
+    let action = state_action_prompt(state);
+    let phase = frame_phase(state, frame_idx);
+    format!(
+        "{}, {}, {}, chibi pixel art, simple flat colors, pure white background, full body character, single animation frame, centered character, square image",
+        truncated, action, phase
+    )
+}
+
+// Kept for tests / external callers that still reference the sprite-sheet prompt style.
 pub fn build_sprite_prompt(base_prompt: &str, spec: &StateSpec) -> String {
     let truncated = if base_prompt.len() > 300 {
         let mut end = 300;
@@ -196,60 +262,78 @@ pub async fn generate_and_assemble(
     let provider = image_provider.as_deref().unwrap_or("pollinations");
     let pets_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("pets");
     let state_specs = build_state_specs();
+
+    // Total progress steps = total number of individual frames across all states.
+    let total: u32 = state_specs.iter().map(|s| s.frame_count as u32).sum();
     let mut current: u32 = 0;
+    let mut call_count: u32 = 0;
     let mut states: HashMap<String, SpriteStateInfo> = HashMap::new();
 
     for spec in &state_specs {
-        let prompt = build_sprite_prompt(&base_prompt, spec);
-        let target_w = spec.img_width();
-        let target_h = spec.img_height();
+        let mut sheet = RgbaImage::new(spec.img_width(), spec.img_height());
 
-        let fetch_result = match provider {
-            "siliconflow" => {
-                let key = image_api_key.as_deref()
-                    .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
-                let model = image_model.as_deref().unwrap_or("Tongyi-MAI/Z-Image-Turbo");
-                fetch_image_siliconflow(&prompt, key, model, target_w, target_h).await
-            }
-            "localsd" => {
-                let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
-                fetch_image_localsd(&prompt, url, target_w, target_h).await
-            }
-            _ => {
-                if current > 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        for frame_idx in 0..spec.frame_count {
+            let prompt = build_frame_prompt(&base_prompt, &spec.state, frame_idx);
+
+            // Some providers (SiliconFlow, LocalSD) require width > 256.
+            // We fetch at a larger size and let decode_sprite_sheet resize down to CELL_SIZE.
+            const API_SIZE: u32 = 512;
+
+            let fetch_result = match provider {
+                "siliconflow" => {
+                    let key = image_api_key.as_deref()
+                        .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
+                    let model = image_model.as_deref().unwrap_or("Tongyi-MAI/Z-Image-Turbo");
+                    fetch_image_siliconflow(&prompt, key, model, API_SIZE, API_SIZE).await
                 }
-                let url = build_pollinations_url(&prompt, target_w, target_h);
-                download_image(&url).await
-            }
-        };
+                "localsd" => {
+                    let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
+                    fetch_image_localsd(&prompt, url, API_SIZE, API_SIZE).await
+                }
+                _ => {
+                    // Rate-limit free Pollinations API: 1 s between calls.
+                    if call_count > 0 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                    let url = build_pollinations_url(&prompt, CELL_SIZE, CELL_SIZE);
+                    download_image(&url).await
+                }
+            };
 
-        let mut sheet = fetch_result
-            .and_then(|b| decode_sprite_sheet(&b, target_w, target_h))
-            .map_err(|e| format!("生成「{}」动画失败: {}", spec.state, e))?;
+            let mut frame = fetch_result
+                .and_then(|b| decode_sprite_sheet(&b, CELL_SIZE, CELL_SIZE))
+                .map_err(|e| format!("生成「{}」第{}帧失败: {}", spec.state, frame_idx + 1, e))?;
 
-        apply_chroma_key(&mut sheet, 30);
+            apply_chroma_key(&mut frame, 30);
+
+            // Paste frame into the sprite sheet at (col, row) grid position.
+            let col = (frame_idx % spec.cols) as u32;
+            let row = (frame_idx / spec.cols) as u32;
+            imageops::replace(&mut sheet, &frame, (col * CELL_SIZE) as i64, (row * CELL_SIZE) as i64);
+
+            call_count += 1;
+            current += 1;
+            let _ = app.emit("generation-progress", serde_json::json!({
+                "current": current,
+                "total": total,
+            }));
+        }
+
         save_sprite_sheet_png(&pets_dir, &pet_id, &spec.state, &sheet)?;
 
         let delay_ms: u32 = match spec.state.as_str() {
-            "walking" | "waving" => 150,
-            _ => 200,
+            "walking" | "waving" => 100,
+            _ => 120,
         };
 
         states.insert(spec.state.clone(), SpriteStateInfo {
             cols: spec.cols,
             rows: spec.rows,
             frame_count: spec.frame_count,
-            frame_w: 128,
-            frame_h: 128,
+            frame_w: CELL_SIZE,
+            frame_h: CELL_SIZE,
             delay_ms,
         });
-
-        current += 1;
-        let _ = app.emit("generation-progress", serde_json::json!({
-            "current": current,
-            "total": TOTAL_STATES as u32,
-        }));
     }
 
     Ok(states)
@@ -316,10 +400,10 @@ mod tests {
         let specs = build_state_specs();
         let map: std::collections::HashMap<_, _> =
             specs.iter().map(|s| (s.state.as_str(), s.frame_count)).collect();
-        assert_eq!(map["idle"],    4);
-        assert_eq!(map["walking"], 6);
-        assert_eq!(map["waving"],  4);
-        assert_eq!(map["working"], 4);
+        assert_eq!(map["idle"],    8);
+        assert_eq!(map["walking"], 8);
+        assert_eq!(map["waving"],  8);
+        assert_eq!(map["working"], 6);
     }
 
     #[test]
@@ -370,5 +454,23 @@ mod tests {
         let loaded = image::open(&path).unwrap();
         assert_eq!(loaded.width(), 256);
         assert_eq!(loaded.height(), 256);
+    }
+
+    #[test]
+    fn frame_phase_covers_all_states() {
+        for state in &["idle", "walking", "waving", "working"] {
+            for i in 0..8 {
+                let phase = frame_phase(state, i);
+                assert!(!phase.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn build_frame_prompt_contains_base_and_phase() {
+        let prompt = build_frame_prompt("anime cat girl", "idle", 0);
+        assert!(prompt.contains("anime cat girl"));
+        assert!(prompt.contains("chibi pixel art"));
+        assert!(prompt.contains("single animation frame"));
     }
 }

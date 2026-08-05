@@ -31,10 +31,11 @@
         "title": "Pet",
         "transparent": true,
         "decorations": false,
+        "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "width": 200,
-        "height": 240,
+        "width": 128,
+        "height": 160,
         "resizable": false,
         "visible": false
       }
