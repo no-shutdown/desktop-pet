@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { PET_STATES } from '../pet';
-import type { Pet } from '../pet';
+import type { Pet, SpriteStateInfo } from '../pet';
+
+const META: SpriteStateInfo = {
+  cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200,
+};
 
 describe('Pet types', () => {
   it('PET_STATES has all four states', () => {
@@ -15,10 +19,12 @@ describe('Pet types', () => {
     const pet: Pet = {
       id: 'abc',
       name: 'Test',
-      frames: { idle: 'i.gif', walking: 'w.gif', waving: 'wv.gif', working: 'wk.gif' },
+      states: { idle: META, walking: META, waving: META, working: META },
       createdAt: '2026-08-03T10:00:00Z',
       prompt: 'chibi',
     };
     expect(pet.id).toBe('abc');
+    expect(pet.states.idle.frameCount).toBe(4);
+    expect(pet.states.walking.delayMs).toBe(200);
   });
 });
