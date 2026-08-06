@@ -1,10 +1,13 @@
 use crate::commands::generation::types::ProviderConfig;
 use base64::Engine as _;
 use serde_json::Value;
-use std::time::Duration;
+use std::{net::IpAddr, str::FromStr, time::Duration};
 
 const SILICONFLOW_ENDPOINT: &str = "https://api.siliconflow.cn/v1/images/generations";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
+const REQUEST_TIMEOUT: Duration = OPERATION_TIMEOUT;
+const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ERROR_DETAIL_BYTES: usize = 512;
 const LOCAL_SD_NEGATIVE_PROMPT: &str = "ugly, blurry, watermark, multiple characters";
 const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
 const MIN_DENOISING_STRENGTH: f32 = 0.35;
@@ -75,6 +78,127 @@ pub fn local_sd_row_body(
     })
 }
 
+fn is_valid_image_subtype(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '.' | '-')
+        })
+}
+
+fn canonical_data_url_payload(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    let (metadata, payload) = value
+        .split_once(',')
+        .ok_or_else(|| "canonical Base image must be a complete data URL".to_string())?;
+    let metadata = metadata.to_ascii_lowercase();
+    let image_metadata = metadata
+        .strip_prefix("data:image/")
+        .ok_or_else(|| "canonical Base image must use an image data URL".to_string())?;
+    let (subtype, encoding) = image_metadata
+        .split_once(';')
+        .ok_or_else(|| "canonical Base image data URL must use base64".to_string())?;
+    if !is_valid_image_subtype(subtype) || encoding != "base64" {
+        return Err("canonical Base image data URL metadata is invalid".to_string());
+    }
+
+    let payload = payload.trim();
+    if payload.is_empty() {
+        return Err("canonical Base image data URL has an empty payload".to_string());
+    }
+    Ok(payload)
+}
+
+fn validate_canonical_data_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let payload = canonical_data_url_payload(value)?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| "canonical Base image data URL has invalid base64".to_string())?;
+    if decoded.is_empty() {
+        return Err("canonical Base image data URL decodes to an empty image".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn is_blocked_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || address.is_broadcast()
+        }
+        IpAddr::V6(address) => {
+            if address.is_loopback()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+                || address.is_unspecified()
+            {
+                return true;
+            }
+            address
+                .to_ipv4_mapped()
+                .map(|mapped| is_blocked_ip(IpAddr::V4(mapped)))
+                .unwrap_or(false)
+        }
+    }
+}
+
+fn validate_image_download_url(value: &str) -> Result<reqwest::Url, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("SiliconFlow image URL is empty".to_string());
+    }
+    if !value
+        .get(..8)
+        .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        .unwrap_or(false)
+    {
+        return Err("SiliconFlow image URL must use HTTPS".to_string());
+    }
+    let authority = value[8..]
+        .split(|character| matches!(character, '/' | '?' | '#'))
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() {
+        return Err("SiliconFlow image URL must have a non-empty host".to_string());
+    }
+
+    let url =
+        reqwest::Url::parse(value).map_err(|_| "SiliconFlow image URL is malformed".to_string())?;
+    if url.scheme() != "https" {
+        return Err("SiliconFlow image URL must use HTTPS".to_string());
+    }
+    if url.username() != "" || url.password().is_some() {
+        return Err("SiliconFlow image URL credentials are not allowed".to_string());
+    }
+
+    let host = url
+        .host_str()
+        .filter(|host| !host.trim().is_empty())
+        .ok_or_else(|| "SiliconFlow image URL must have a non-empty host".to_string())?;
+    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
+    if normalized_host == "localhost"
+        || normalized_host == "localhost.localdomain"
+        || normalized_host.ends_with(".localhost")
+    {
+        return Err("SiliconFlow image URL host is not allowed".to_string());
+    }
+    let ip_host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if IpAddr::from_str(ip_host)
+        .map(is_blocked_ip)
+        .unwrap_or(false)
+    {
+        return Err("SiliconFlow image URL host is not allowed".to_string());
+    }
+
+    Ok(url)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ImageSource {
     Bytes(Vec<u8>),
@@ -90,11 +214,8 @@ fn local_sd_endpoint(base_url: &str, method: &str) -> String {
 
 fn decode_image_data(value: &str, provider: &str) -> Result<Vec<u8>, String> {
     let value = value.trim();
-    let encoded = if value.starts_with("data:") {
-        value
-            .split_once(',')
-            .map(|(_, payload)| payload.trim())
-            .ok_or_else(|| format!("{provider}: invalid data URL image"))?
+    let encoded = if value.to_ascii_lowercase().starts_with("data:") {
+        canonical_data_url_payload(value).map_err(|error| format!("{provider}: {error}"))?
     } else {
         value
     };
@@ -110,6 +231,118 @@ fn decode_image_data(value: &str, provider: &str) -> Result<Vec<u8>, String> {
         return Err(format!("{provider}: decoded image is empty"));
     }
     Ok(bytes)
+}
+
+fn validate_content_length(content_length: Option<u64>) -> Result<(), String> {
+    match content_length {
+        Some(0) => Err("SiliconFlow image response body is empty".to_string()),
+        Some(length) if length > MAX_IMAGE_BYTES as u64 => Err(format!(
+            "SiliconFlow image response exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn append_bounded_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+    let next_length = body
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| "SiliconFlow image response is too large".to_string())?;
+    if next_length > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "SiliconFlow image response exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn finish_image_body(body: Vec<u8>) -> Result<Vec<u8>, String> {
+    if body.is_empty() {
+        return Err("SiliconFlow image response body is empty".to_string());
+    }
+    Ok(body)
+}
+
+fn next_http_url_start(value: &str) -> Option<usize> {
+    let http = value.find("http://");
+    let https = value.find("https://");
+    match (http, https) {
+        (Some(http), Some(https)) => Some(http.min(https)),
+        (Some(http), None) => Some(http),
+        (None, Some(https)) => Some(https),
+        (None, None) => None,
+    }
+}
+
+fn redact_http_urls(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < value.len() {
+        let remaining = &value[cursor..];
+        let Some(relative_start) = next_http_url_start(remaining) else {
+            result.push_str(remaining);
+            break;
+        };
+        let start = cursor + relative_start;
+        result.push_str(&value[cursor..start]);
+        let url_end = value[start..]
+            .char_indices()
+            .skip(1)
+            .find(|(_, character)| {
+                character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '<' | '>' | ')' | ']' | '}' | ',')
+            })
+            .map(|(offset, _)| start + offset)
+            .unwrap_or(value.len());
+        result.push_str("[redacted-url]");
+        cursor = url_end;
+    }
+    result
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn sanitize_provider_error_detail(detail: &str) -> String {
+    let redacted = redact_http_urls(detail);
+    let sanitized: String = redacted
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    truncate_utf8(&sanitized, MAX_ERROR_DETAIL_BYTES)
+}
+
+fn sanitize_provider_error_detail_with_secret(detail: &str, secret: Option<&str>) -> String {
+    let redacted_secret = secret
+        .filter(|secret| !secret.is_empty())
+        .map(|secret| detail.replace(secret, "[redacted-secret]"))
+        .unwrap_or_else(|| detail.to_string());
+    sanitize_provider_error_detail(&redacted_secret)
+}
+
+fn bounded_sanitized_error(prefix: &str, detail: &str, secret: Option<&str>) -> String {
+    let detail = sanitize_provider_error_detail_with_secret(detail, secret);
+    if detail.is_empty() {
+        return prefix.to_string();
+    }
+    truncate_utf8(&format!("{prefix}: {detail}"), MAX_ERROR_DETAIL_BYTES)
 }
 
 fn first_image<'a>(response: &'a Value, provider: &str) -> Result<&'a Value, String> {
@@ -151,6 +384,7 @@ fn decode_local_sd_response(response: &Value) -> Result<Vec<u8>, String> {
 fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("HTTP client initialization failed: {error}"))
 }
@@ -179,38 +413,85 @@ fn validate_provider(config: &ProviderConfig) -> Result<(), String> {
     Ok(())
 }
 
-async fn parse_json_response(response: reqwest::Response, provider: &str) -> Result<Value, String> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("{provider} API error: {status}"));
+async fn read_bounded_image_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    validate_content_length(response.content_length())?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        bounded_sanitized_error(
+            "SiliconFlow image download failed",
+            &error.to_string(),
+            None,
+        )
+    })? {
+        append_bounded_image_chunk(&mut body, &chunk)?;
+    }
+    finish_image_body(body)
+}
+
+async fn read_bounded_error_detail(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    let mut truncated = false;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = MAX_ERROR_DETAIL_BYTES.saturating_sub(body.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
     }
 
-    response
-        .json::<Value>()
-        .await
-        .map_err(|error| format!("{provider} response JSON decode failed: {error}"))
+    let mut detail = String::from_utf8_lossy(&body).into_owned();
+    if truncated {
+        detail.push_str(" [truncated]");
+    }
+    sanitize_provider_error_detail(&detail)
+}
+
+async fn parse_json_response(
+    response: reqwest::Response,
+    provider: &str,
+    secret: Option<&str>,
+) -> Result<Value, String> {
+    let status = response.status();
+    if !status.is_success() {
+        let detail = read_bounded_error_detail(response).await;
+        return Err(bounded_sanitized_error(
+            &format!("{provider} API error: {status}"),
+            &detail,
+            secret,
+        ));
+    }
+
+    response.json::<Value>().await.map_err(|error| {
+        bounded_sanitized_error(
+            &format!("{provider} response JSON decode failed"),
+            &error.to_string(),
+            secret,
+        )
+    })
 }
 
 async fn download_image(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    if url.trim_start().starts_with("data:") {
-        return decode_image_data(url, "SiliconFlow");
-    }
+    let url = validate_image_download_url(url)?;
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("SiliconFlow image download failed: {error}"))?;
+    let response = client.get(url).send().await.map_err(|error| {
+        bounded_sanitized_error(
+            "SiliconFlow image download failed",
+            &error.to_string(),
+            None,
+        )
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("SiliconFlow image download failed: {status}"));
     }
 
-    response
-        .bytes()
-        .await
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| format!("SiliconFlow image download failed: {error}"))
+    read_bounded_image_body(response).await
 }
 
 async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Vec<u8>, String> {
@@ -227,8 +508,14 @@ async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Ve
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("SiliconFlow request failed: {error}"))?;
-    let response = parse_json_response(response, "SiliconFlow").await?;
+        .map_err(|error| {
+            bounded_sanitized_error(
+                "SiliconFlow request failed",
+                &error.to_string(),
+                Some(api_key),
+            )
+        })?;
+    let response = parse_json_response(response, "SiliconFlow", Some(api_key)).await?;
 
     match siliconflow_image_source(&response)? {
         ImageSource::Bytes(bytes) => Ok(bytes),
@@ -243,25 +530,39 @@ async fn generate_local_sd(endpoint: String, body: Value) -> Result<Vec<u8>, Str
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("Local SD connection failed: {error}"))?;
-    let response = parse_json_response(response, "Local SD").await?;
+        .map_err(|error| {
+            bounded_sanitized_error("Local SD connection failed", &error.to_string(), None)
+        })?;
+    let response = parse_json_response(response, "Local SD", None).await?;
     decode_local_sd_response(&response)
+}
+
+async fn run_with_operation_deadline<F>(operation: F) -> Result<Vec<u8>, String>
+where
+    F: std::future::Future<Output = Result<Vec<u8>, String>>,
+{
+    tokio::time::timeout(OPERATION_TIMEOUT, operation)
+        .await
+        .map_err(|_| "image generation operation timed out after 120 seconds".to_string())?
 }
 
 pub async fn generate_base(config: &ProviderConfig, prompt: &str) -> Result<Vec<u8>, String> {
     validate_provider(config)?;
 
-    match config.provider.trim() {
-        "siliconflow" => {
-            let body = siliconflow_base_body(&config.base_model, prompt, 256, 256);
-            generate_siliconflow(config, body).await
+    run_with_operation_deadline(async {
+        match config.provider.trim() {
+            "siliconflow" => {
+                let body = siliconflow_base_body(&config.base_model, prompt, 256, 256);
+                generate_siliconflow(config, body).await
+            }
+            "localsd" | "local_sd" => {
+                let body = local_sd_base_body(prompt, 256, 256);
+                generate_local_sd(local_sd_endpoint(&config.local_sd_url, "txt2img"), body).await
+            }
+            provider => Err(format!("unsupported image provider: {provider}")),
         }
-        "localsd" | "local_sd" => {
-            let body = local_sd_base_body(prompt, 256, 256);
-            generate_local_sd(local_sd_endpoint(&config.local_sd_url, "txt2img"), body).await
-        }
-        provider => Err(format!("unsupported image provider: {provider}")),
-    }
+    })
+    .await
 }
 
 pub async fn generate_row(
@@ -270,23 +571,29 @@ pub async fn generate_row(
     base_data_url: &str,
 ) -> Result<Vec<u8>, String> {
     validate_provider(config)?;
-    if base_data_url.trim().is_empty() {
-        return Err("canonical Base image is required".to_string());
-    }
+    let base_data_url = validate_canonical_data_url(base_data_url)?;
 
-    match config.provider.trim() {
-        "siliconflow" => {
-            let body =
-                siliconflow_row_body(&config.reference_model, prompt, base_data_url, 2048, 256);
-            generate_siliconflow(config, body).await
+    run_with_operation_deadline(async {
+        match config.provider.trim() {
+            "siliconflow" => {
+                let body = siliconflow_row_body(
+                    &config.reference_model,
+                    prompt,
+                    &base_data_url,
+                    2048,
+                    256,
+                );
+                generate_siliconflow(config, body).await
+            }
+            "localsd" | "local_sd" => {
+                let body =
+                    local_sd_row_body(prompt, &base_data_url, 2048, 256, config.denoising_strength);
+                generate_local_sd(local_sd_endpoint(&config.local_sd_url, "img2img"), body).await
+            }
+            provider => Err(format!("unsupported image provider: {provider}")),
         }
-        "localsd" | "local_sd" => {
-            let body =
-                local_sd_row_body(prompt, base_data_url, 2048, 256, config.denoising_strength);
-            generate_local_sd(local_sd_endpoint(&config.local_sd_url, "img2img"), body).await
-        }
-        provider => Err(format!("unsupported image provider: {provider}")),
-    }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -473,6 +780,104 @@ mod tests {
             poll_error(generate_row(&missing_key, "prompt", BASE_IMAGE)),
             "SiliconFlow API key is required"
         );
+    }
+
+    #[test]
+    fn image_download_url_validation_allows_https_cdn_and_rejects_unsafe_targets() {
+        let valid = validate_image_download_url("https://cdn.example/image.png").unwrap();
+        assert_eq!(valid.scheme(), "https");
+
+        for invalid in [
+            "",
+            "http://cdn.example/image.png",
+            "https:///image.png",
+            "https://localhost/image.png",
+            "https://localhost.localdomain/image.png",
+            "https://127.0.0.1/image.png",
+            "https://10.0.0.8/image.png",
+            "https://192.168.1.8/image.png",
+            "https://169.254.1.8/image.png",
+            "https://[::1]/image.png",
+            "https://[fc00::1]/image.png",
+            "https://[fe80::1]/image.png",
+            "https://%zz/image.png",
+        ] {
+            assert!(
+                validate_image_download_url(invalid).is_err(),
+                "expected URL to be rejected: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_row_data_url_requires_image_base64_metadata_and_payload() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3]);
+        let valid = format!("data:image/png;base64,{encoded}");
+        assert_eq!(validate_canonical_data_url(&valid).unwrap(), valid);
+
+        for invalid in [
+            "",
+            "https://cdn.example/base.png",
+            "data:image/png;base64",
+            "data:image/png;base64,",
+            "data:text/plain;base64,SGVsbG8=",
+            "data:image/png,SGVsbG8=",
+            "data:image/png;utf8;base64,SGVsbG8=",
+            "data:image/;base64,SGVsbG8=",
+            "data:image/png;base64,not-base64",
+        ] {
+            assert!(
+                validate_canonical_data_url(invalid).is_err(),
+                "expected data URL to be rejected: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_body_limits_reject_oversized_content_and_empty_body() {
+        assert!(validate_content_length(Some(MAX_IMAGE_BYTES as u64)).is_ok());
+        assert!(validate_content_length(Some(MAX_IMAGE_BYTES as u64 + 1)).is_err());
+        assert!(finish_image_body(Vec::new()).is_err());
+
+        let mut body = Vec::new();
+        append_bounded_image_chunk(&mut body, &[1, 2, 3]).unwrap();
+        assert_eq!(finish_image_body(body).unwrap(), vec![1, 2, 3]);
+
+        let mut full_body = vec![0_u8; MAX_IMAGE_BYTES];
+        assert!(append_bounded_image_chunk(&mut full_body, &[1]).is_err());
+    }
+
+    #[test]
+    fn provider_error_details_are_url_redacted_and_byte_bounded() {
+        let detail = format!(
+            "provider failed: https://cdn.example/image.png?X-Amz-Signature={}",
+            "secret".repeat(2000)
+        );
+        let sanitized = sanitize_provider_error_detail(&detail);
+
+        assert!(sanitized.len() <= MAX_ERROR_DETAIL_BYTES);
+        assert!(!sanitized.contains("https://"));
+        assert!(!sanitized.contains("X-Amz-Signature"));
+        assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn network_error_messages_keep_context_without_urls_or_secrets() {
+        let detail = "status=503 https://cdn.example/image.png?signature=signed-value api-key";
+        let message =
+            bounded_sanitized_error("SiliconFlow image download failed", detail, Some("api-key"));
+
+        assert!(message.starts_with("SiliconFlow image download failed:"));
+        assert!(message.contains("status=503"));
+        assert!(!message.contains("https://"));
+        assert!(!message.contains("signed-value"));
+        assert!(!message.contains("api-key"));
+        assert!(message.len() <= MAX_ERROR_DETAIL_BYTES);
+    }
+
+    #[test]
+    fn provider_operation_deadline_is_finite_and_shared() {
+        assert_eq!(OPERATION_TIMEOUT, Duration::from_secs(120));
     }
 
     fn poll_error<F>(future: F) -> String

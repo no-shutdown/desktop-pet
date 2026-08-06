@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 pub const FRAME_W: u32 = 128;
 pub const FRAME_H: u32 = 128;
@@ -6,7 +6,7 @@ pub const API_FRAME_W: u32 = 256;
 pub const API_FRAME_H: u32 = 256;
 pub const DEFAULT_FRAME_COUNT: u32 = 8;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub provider: String,
     pub api_key: Option<String>,
@@ -14,6 +14,20 @@ pub struct ProviderConfig {
     pub reference_model: String,
     pub local_sd_url: String,
     pub denoising_strength: f32,
+}
+
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("base_model", &self.base_model)
+            .field("reference_model", &self.reference_model)
+            .field("local_sd_url", &self.local_sd_url)
+            .field("denoising_strength", &self.denoising_strength)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,5 +216,21 @@ mod tests {
         assert_eq!(decoded.states["idle"].attempts, 0);
         assert_eq!(decoded.frame_w, 128);
         assert_eq!(decoded.frame_h, 128);
+    }
+
+    #[test]
+    fn provider_config_debug_redacts_api_key() {
+        let config = ProviderConfig {
+            provider: "siliconflow".into(),
+            api_key: Some("secret-api-key".into()),
+            base_model: "base".into(),
+            reference_model: "reference".into(),
+            local_sd_url: "http://127.0.0.1:7860".into(),
+            denoising_strength: 0.55,
+        };
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("secret-api-key"));
+        assert!(debug.contains("redacted"));
     }
 }
