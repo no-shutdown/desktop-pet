@@ -453,6 +453,14 @@ fn bounded_sanitized_error(prefix: &str, detail: &str, secret: Option<&str>) -> 
     truncate_utf8(&format!("{prefix}: {detail}"), MAX_ERROR_DETAIL_BYTES)
 }
 
+fn client_initialization_error(context: &str, detail: &str, secret: Option<&str>) -> String {
+    bounded_sanitized_error(
+        &format!("{context} HTTP client initialization failed"),
+        detail,
+        secret,
+    )
+}
+
 fn first_image<'a>(response: &'a Value, provider: &str) -> Result<&'a Value, String> {
     response
         .get("images")
@@ -489,12 +497,12 @@ fn decode_local_sd_response(response: &Value) -> Result<Vec<u8>, String> {
     decode_image_data(image, "Local SD")
 }
 
-fn build_http_client() -> Result<reqwest::Client, String> {
+fn build_http_client(provider: &str, secret: Option<&str>) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|error| format!("HTTP client initialization failed: {error}"))
+        .map_err(|error| client_initialization_error(provider, &error.to_string(), secret))
 }
 
 fn build_resolved_http_client(host: &str, address: SocketAddr) -> Result<reqwest::Client, String> {
@@ -504,7 +512,9 @@ fn build_resolved_http_client(host: &str, address: SocketAddr) -> Result<reqwest
         .no_proxy()
         .resolve(host, address)
         .build()
-        .map_err(|error| format!("HTTP client initialization failed: {error}"))
+        .map_err(|error| {
+            client_initialization_error("SiliconFlow image download", &error.to_string(), None)
+        })
 }
 
 fn validate_provider(config: &ProviderConfig) -> Result<(), String> {
@@ -635,7 +645,7 @@ async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Ve
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .ok_or_else(|| "SiliconFlow API key is required".to_string())?;
-    let client = build_http_client()?;
+    let client = build_http_client("SiliconFlow", Some(api_key))?;
     let response = client
         .post(SILICONFLOW_ENDPOINT)
         .bearer_auth(api_key)
@@ -658,7 +668,7 @@ async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Ve
 }
 
 async fn generate_local_sd(endpoint: String, body: Value) -> Result<Vec<u8>, String> {
-    let client = build_http_client()?;
+    let client = build_http_client("Local SD", None)?;
     let response = client
         .post(endpoint)
         .json(&body)
@@ -1016,6 +1026,22 @@ mod tests {
         assert!(!message.contains("signed-value"));
         assert!(!message.contains("api-key"));
         assert!(message.len() <= MAX_ERROR_DETAIL_BYTES);
+    }
+
+    #[test]
+    fn client_initialization_errors_keep_provider_context_and_are_sanitized() {
+        let detail = format!(
+            "HTTPS://signed.example/client?token={} api-key",
+            "secret".repeat(2000)
+        );
+        let message = client_initialization_error("SiliconFlow", &detail, Some("api-key"));
+
+        assert!(message.starts_with("SiliconFlow HTTP client initialization failed:"));
+        assert!(message.len() <= MAX_ERROR_DETAIL_BYTES);
+        assert!(!message.contains("HTTPS://"));
+        assert!(!message.contains("token"));
+        assert!(!message.contains(&"secret".repeat(200)));
+        assert!(!message.contains("api-key"));
     }
 
     #[test]
