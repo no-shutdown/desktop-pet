@@ -3,9 +3,10 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const { mockInvoke, mockListen, mockSaveSettings } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
-  mockListen: vi.fn().mockResolvedValue(() => {}),
+  mockListen: vi.fn(),
   mockSaveSettings: vi.fn(),
 }));
+
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mockListen }));
 vi.mock('../../../../lib/settings', () => ({
@@ -13,18 +14,24 @@ vi.mock('../../../../lib/settings', () => ({
     visionProvider: 'skip',
     visionApiKey: '',
     visionModel: '',
-    imageProvider: 'pollinations',
-    imageApiKey: '',
-    imageModel: '',
-    imageBaseModel: 'Tongyi-MAI/Z-Image-Turbo',
-    imageReferenceModel: 'Qwen/Qwen-Image-Edit-2509',
-    localSdUrl: '',
+    imageProvider: 'siliconflow',
+    imageApiKey: 'image-api-key',
+    imageModel: 'legacy-model',
+    imageBaseModel: 'base-model',
+    imageReferenceModel: 'reference-model',
+    localSdUrl: 'http://localhost:7860',
     localSdDenoisingStrength: 0.55,
   }),
   saveSettings: mockSaveSettings,
+  SILICONFLOW_BASE_MODELS: [
+    { value: 'base-model', label: 'Base model' },
+    { value: 'other-base-model', label: 'Other base model' },
+  ],
+  SILICONFLOW_REFERENCE_MODELS: [
+    { value: 'reference-model', label: 'Reference model' },
+  ],
   SILICONFLOW_MODELS: [
-    { value: 'Tongyi-MAI/Z-Image-Turbo', label: 'Z-Image-Turbo' },
-    { value: 'Tongyi-MAI/Z-Image', label: 'Z-Image' },
+    { value: 'base-model', label: 'Base model' },
   ],
 }));
 
@@ -33,73 +40,109 @@ import GenerateStep from '../GenerateStep';
 describe('GenerateStep', () => {
   const defaultProps = {
     prompt: 'anime chibi girl',
+    referenceDataUrl: 'data:image/jpeg;base64,REF',
     onNext: vi.fn(),
     onBack: vi.fn(),
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockInvoke.mockResolvedValue(undefined);
-  });
-
-  it('shows Generate button before starting', () => {
-    render(<GenerateStep {...defaultProps} />);
-    expect(screen.getByRole('button', { name: /开始生成/ })).toBeTruthy();
-  });
-
-  it('clicking Generate calls invoke with generate_and_assemble', async () => {
-    render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
-    await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith(
-        'generate_and_assemble',
-        expect.objectContaining({ basePrompt: 'anime chibi girl' })
-      );
+    mockListen.mockResolvedValue(() => {});
+    mockInvoke.mockResolvedValue({
+      runId: 'run-1',
+      dataUrl: 'data:image/png;base64,BASE',
+      chromaKey: '#FF00FF',
     });
   });
 
-  it('shows progress text while generating', async () => {
-    // Keep invoke pending so generating state persists
-    let resolve: () => void;
-    mockInvoke.mockReturnValue(new Promise<void>((res) => { resolve = res; }));
+  it('calls generate_base_preview with the current backend payload', async () => {
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
 
-    render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
 
     await waitFor(() => {
-      expect(screen.getByText(/正在生成/)).toBeTruthy();
+      expect(mockInvoke).toHaveBeenCalledWith('generate_base_preview', {
+        runId: 'run-1',
+        basePrompt: 'anime chibi girl',
+        referenceDataUrl: 'data:image/jpeg;base64,REF',
+        imageProvider: 'siliconflow',
+        imageApiKey: 'image-api-key',
+        baseModel: 'base-model',
+        referenceModel: 'reference-model',
+        localSdUrl: 'http://localhost:7860',
+        denoisingStrength: 0.55,
+      });
     });
 
-    resolve!();
+    expect(mockInvoke.mock.calls.some(([name]) => name === 'generate_and_assemble')).toBe(false);
   });
 
-  it('shows Next button after generation completes', async () => {
-    mockInvoke.mockResolvedValue(undefined);
-    render(<GenerateStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: /开始生成/ }));
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /下一步/ })).toBeTruthy();
+  it('displays the Base preview and confirms only the Base result', async () => {
+    const onNext = vi.fn();
+    render(<GenerateStep {...defaultProps} onNext={onNext} runId="run-1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    expect(await screen.findByAltText('canonical base preview')).toHaveAttribute(
+      'src',
+      'data:image/png;base64,BASE',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Base' }));
+
+    expect(onNext).toHaveBeenCalledWith({
+      runId: 'run-1',
+      dataUrl: 'data:image/png;base64,BASE',
     });
   });
 
-  it('saves a legacy model selection to both imageModel and imageBaseModel', () => {
-    const { container } = render(<GenerateStep {...defaultProps} />);
+  it('retries the same Base run after a provider failure', async () => {
+    mockInvoke
+      .mockRejectedValueOnce(new Error('provider failed'))
+      .mockResolvedValueOnce({
+        runId: 'run-1',
+        dataUrl: 'data:image/png;base64,BASE2',
+        chromaKey: '#FF00FF',
+      });
 
-    fireEvent.click(container.querySelector('input[value="siliconflow"]')!);
-    fireEvent.change(container.querySelector('select')!, {
-      target: { value: 'Tongyi-MAI/Z-Image' },
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    expect(await screen.findByText('provider failed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Base' }));
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+    expect(mockInvoke.mock.calls.map(([name]) => name)).toEqual([
+      'generate_base_preview',
+      'generate_base_preview',
+    ]);
+    expect(mockInvoke.mock.calls[0][1]).toEqual(mockInvoke.mock.calls[1][1]);
+    expect(screen.getByAltText('canonical base preview')).toHaveAttribute(
+      'src',
+      'data:image/png;base64,BASE2',
+    );
+  });
+
+  it('keeps the error visible and does not use a fallback command', async () => {
+    mockInvoke.mockRejectedValue(new Error('no provider fallback'));
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+
+    expect(await screen.findByText('no provider fallback')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry Base' })).toBeTruthy();
+    expect(mockInvoke.mock.calls.every(([name]) => name === 'generate_base_preview')).toBe(true);
+  });
+
+  it('stores model changes using the canonical settings fields', () => {
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+
+    fireEvent.change(screen.getByLabelText('Base model'), {
+      target: { value: 'other-base-model' },
     });
 
     expect(mockSaveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
-      imageModel: 'Tongyi-MAI/Z-Image',
-      imageBaseModel: 'Tongyi-MAI/Z-Image',
+      imageBaseModel: 'other-base-model',
+      imageModel: 'other-base-model',
     }));
-  });
-
-  it('calls onBack when Back is clicked', () => {
-    const onBack = vi.fn();
-    render(<GenerateStep {...defaultProps} onBack={onBack} />);
-    fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
-    expect(onBack).toHaveBeenCalledOnce();
   });
 });

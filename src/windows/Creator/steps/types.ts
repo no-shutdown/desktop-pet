@@ -15,14 +15,11 @@ export interface GenerationRunPreview {
 
 export interface GeneratedSpriteConfig {
   petId: string;
-  /** Optional while the legacy all-in-one generator remains in the Creator flow. */
-  runId?: string;
+  runId: string;
   frameW: number;
   frameH: number;
-  /** Optional while legacy grid imports remain supported. */
-  rowGap?: number;
-  /** Optional while legacy grid imports remain supported. */
-  layout?: 'horizontalRows' | 'grid';
+  rowGap: number;
+  layout: 'horizontalRows' | 'grid';
   idleFrames: number;
   walkingFrames: number;
   wavingFrames: number;
