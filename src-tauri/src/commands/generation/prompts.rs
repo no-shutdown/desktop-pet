@@ -5,9 +5,10 @@ const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, label
 
 pub fn build_base_prompt(base_description: &str, chroma_hex: &str, chroma_name: &str) -> String {
     let description = truncate_description(base_description);
+    let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "Create a concise game-ready canonical reference image for {description}. One centered complete full-body character in a neutral relaxed pose; preserve the face, proportions, markings, palette, materials, clothing, accessories, and props as the identity source for every later animation frame. Use a flat {chroma_name} chroma background ({chroma_hex}). {BASE_NEGATIVE_EXCLUSIONS}."
+        "Create a concise game-ready canonical reference image for {description}. One centered complete full-body character in a neutral relaxed pose; preserve the face, proportions, markings, palette, materials, clothing, accessories, and props as the identity source for every later animation frame. Use a flat {chroma_name} chroma background ({chroma_hex}). {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
     )
 }
 
@@ -18,10 +19,17 @@ pub fn build_row_prompt(
     state: &StateDefinition,
 ) -> String {
     let description = truncate_description(base_description);
+    let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "Using the attached canonical base image as the only identity reference for {description}, create exactly 8 full-body frames left-to-right on a flat {chroma_name} chroma background ({chroma_hex}). Arrange equal-width invisible slots with one centered complete pose per slot; no clipping, no overlap, no empty slots, no labels, and no borders. Keep stable scale and baseline, preserve identity exactly, and preserve the face, proportions, markings, palette, materials, clothing, accessories, and props. State action: {}. State requirements: {}. {}.",
-        state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS
+        "Using the attached canonical base image as the only identity reference for {description}, create exactly 8 full-body frames left-to-right on a flat {chroma_name} chroma background ({chroma_hex}). Arrange equal-width invisible slots with one centered complete pose per slot; no clipping, no overlap, no empty slots, no labels, and no borders. Keep stable scale and baseline, preserve identity exactly, and preserve the face, proportions, markings, palette, materials, clothing, accessories, and props. State action: {}. State requirements: {}. {}. {}",
+        state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
+    )
+}
+
+fn chroma_component_exclusion(chroma_hex: &str) -> String {
+    format!(
+        "Never use {chroma_hex} inside any character component, including the body, face, clothing, accessories, props, highlights, particles, glow, and detached effects; no cropped limbs."
     )
 }
 
@@ -63,6 +71,9 @@ mod tests {
             "props",
             "flat magenta chroma background",
             "#FF00FF",
+            "never use #FF00FF inside any character component",
+            "props, highlights",
+            "no cropped limbs",
             "extra characters",
             "scenery",
             "text",
@@ -111,6 +122,8 @@ mod tests {
             "left-to-right",
             "flat cyan chroma background",
             "#00FFFF",
+            "never use #00FFFF inside any character component",
+            "props, highlights",
             "equal-width invisible slots",
             "one centered complete pose per slot",
             "no clipping",
@@ -118,6 +131,7 @@ mod tests {
             "no empty slots",
             "no labels",
             "no borders",
+            "no cropped limbs",
             "stable scale",
             "baseline",
             "preserve identity",

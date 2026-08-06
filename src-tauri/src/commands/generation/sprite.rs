@@ -122,6 +122,10 @@ pub fn validate_sprite_row(
     frame_h: u32,
     frame_count: u32,
 ) -> Result<(), String> {
+    if frame_count == 0 {
+        return Err("invalid frame count: must be greater than zero".to_string());
+    }
+
     let expected_width = frame_w
         .checked_mul(frame_count)
         .ok_or_else(|| "invalid dimensions: width overflow".to_string())?;
@@ -282,6 +286,34 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_image_bytes_before_normalizing() {
+        let error =
+            normalize_horizontal_row(b"not an image", &CHROMA_KEY_CANDIDATES[0]).unwrap_err();
+
+        assert!(error.contains("decode image"));
+    }
+
+    #[test]
+    fn normalizes_rgb_when_a_near_key_ramp_rounds_alpha_to_zero() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut image = RgbaImage::from_pixel(1, 1, Rgba([255, 0, 245, 1]));
+
+        apply_chroma_key(&mut image, &key, 8);
+
+        assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn near_key_alpha_ramp_reaches_zero_at_the_threshold_boundary() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut image = RgbaImage::from_pixel(1, 1, Rgba([255, 0, 247, 255]));
+
+        apply_chroma_key(&mut image, &key, 8);
+
+        assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn rejects_wrong_dimensions_and_accepts_a_valid_nonempty_row() {
         let wrong_width = RgbaImage::from_pixel(1023, 128, Rgba([1, 2, 3, 255]));
         let valid = opaque_row([1, 2, 3, 255]);
@@ -289,6 +321,15 @@ mod tests {
         let error = validate_sprite_row(&wrong_width, 128, 128, 8).unwrap_err();
         assert!(error.contains("dimensions"));
         validate_sprite_row(&valid, 128, 128, 8).unwrap();
+    }
+
+    #[test]
+    fn rejects_zero_frame_count_even_when_zero_width_matches() {
+        let zero_frame_image = RgbaImage::new(0, FRAME_H);
+
+        let error = validate_sprite_row(&zero_frame_image, FRAME_W, FRAME_H, 0).unwrap_err();
+
+        assert!(error.contains("frame count"));
     }
 
     #[test]
