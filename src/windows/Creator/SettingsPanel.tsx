@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import {
   loadSettings, saveSettings,
-  getVisionModels, defaultVisionModel, SILICONFLOW_MODELS,
+  getVisionModels, defaultVisionModel,
+  SILICONFLOW_BASE_MODELS, SILICONFLOW_REFERENCE_MODELS,
+  LOCAL_SD_DENOISING_MIN, LOCAL_SD_DENOISING_MAX,
+  normalizeDenoisingStrength,
   type AppSettings, type VisionProvider, type ImageProvider,
 } from '../../lib/settings';
 
@@ -16,8 +19,7 @@ const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] =
   { value: 'kimi',      label: 'Kimi（月之暗面）',    desc: 'moonshot 视觉模型' },
 ];
 
-const IMAGE_OPTIONS: { value: ImageProvider; label: string; desc: string }[] = [
-  { value: 'pollinations', label: 'Pollinations.ai（免费）', desc: '无需 API Key，Flux 模型' },
+const IMAGE_OPTIONS: { value: Exclude<ImageProvider, 'pollinations'>; label: string; desc: string }[] = [
   { value: 'siliconflow',  label: '硅基流动 SiliconFlow',   desc: '有免费额度，siliconflow.cn' },
   { value: 'localsd',      label: '本地 Stable Diffusion',  desc: 'AUTOMATIC1111 WebUI' },
 ];
@@ -172,13 +174,29 @@ export default function SettingsPanel({ onBack }: SettingsPanelProps) {
                 />
               </div>
               <div>
-                <label style={labelStyle}>模型</label>
+                <label style={labelStyle} htmlFor="siliconflow-base-model">Base 模型</label>
                 <select
-                  value={settings.imageModel}
-                  onChange={(e) => update({ imageModel: e.target.value })}
+                  id="siliconflow-base-model"
+                  aria-label="Base model"
+                  value={settings.imageBaseModel}
+                  onChange={(e) => update({ imageBaseModel: e.target.value, imageModel: e.target.value })}
                   style={selectStyle}
                 >
-                  {SILICONFLOW_MODELS.map(({ value, label }) => (
+                  {SILICONFLOW_BASE_MODELS.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle} htmlFor="siliconflow-reference-model">Reference / img2img 模型</label>
+                <select
+                  id="siliconflow-reference-model"
+                  aria-label="Reference model"
+                  value={settings.imageReferenceModel}
+                  onChange={(e) => update({ imageReferenceModel: e.target.value })}
+                  style={selectStyle}
+                >
+                  {SILICONFLOW_REFERENCE_MODELS.map(({ value, label }) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
                 </select>
@@ -187,15 +205,38 @@ export default function SettingsPanel({ onBack }: SettingsPanelProps) {
           )}
 
           {needsSdUrl && (
-            <div>
-              <label style={labelStyle}>WebUI 地址</label>
-              <input
-                type="text"
-                value={settings.localSdUrl}
-                onChange={(e) => update({ localSdUrl: e.target.value })}
-                placeholder="http://localhost:7860"
-                style={fieldStyle}
-              />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={labelStyle} htmlFor="local-sd-url">WebUI 地址</label>
+                <input
+                  id="local-sd-url"
+                  type="text"
+                  value={settings.localSdUrl}
+                  onChange={(e) => update({ localSdUrl: e.target.value })}
+                  placeholder="http://localhost:7860"
+                  style={fieldStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle} htmlFor="local-sd-denoising">
+                  img2img 去噪强度：{settings.localSdDenoisingStrength.toFixed(2)}
+                </label>
+                <input
+                  id="local-sd-denoising"
+                  name="localSdDenoisingStrength"
+                  type="range"
+                  min={LOCAL_SD_DENOISING_MIN}
+                  max={LOCAL_SD_DENOISING_MAX}
+                  step="0.05"
+                  value={settings.localSdDenoisingStrength}
+                  onChange={(e) => update({ localSdDenoisingStrength: normalizeDenoisingStrength(e.target.value) })}
+                  style={{ width: '100%', accentColor: '#4f8ef7', cursor: 'pointer' }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#a0aec0' }}>
+                  <span>{LOCAL_SD_DENOISING_MIN.toFixed(2)}</span>
+                  <span>{LOCAL_SD_DENOISING_MAX.toFixed(2)}</span>
+                </div>
+              </div>
             </div>
           )}
         </section>
