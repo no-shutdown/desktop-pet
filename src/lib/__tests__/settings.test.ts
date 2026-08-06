@@ -81,6 +81,21 @@ describe('settings defaults and migration', () => {
     expect(loadSettings().imageBaseModel).toBe('legacy/base-model');
   });
 
+  it('keeps a selected Base model after saving and reloading', () => {
+    const settings = loadSettings();
+    const selectedBaseModel = 'Tongyi-MAI/Z-Image';
+
+    saveSettings({
+      ...settings,
+      imageModel: selectedBaseModel,
+      imageBaseModel: selectedBaseModel,
+    });
+
+    const reloaded = loadSettings();
+    expect(reloaded.imageBaseModel).toBe(selectedBaseModel);
+    expect(reloaded.imageModel).toBe(selectedBaseModel);
+  });
+
   it('normalizes absent, partial, invalid, and out-of-range stored values', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       imageProvider: 'not-a-provider',

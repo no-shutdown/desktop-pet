@@ -130,7 +130,10 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
               />
               <select
                 value={settings.imageModel}
-                onChange={(e) => updateSettings({ imageModel: e.target.value })}
+                onChange={(e) => updateSettings({
+                  imageModel: e.target.value,
+                  imageBaseModel: e.target.value,
+                })}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
               >
                 {SILICONFLOW_MODELS.map(({ value, label }) => (

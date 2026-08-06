@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
-const { mockInvoke, mockListen } = vi.hoisted(() => ({
+const { mockInvoke, mockListen, mockSaveSettings } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockListen: vi.fn().mockResolvedValue(() => {}),
+  mockSaveSettings: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mockListen }));
@@ -15,10 +16,16 @@ vi.mock('../../../../lib/settings', () => ({
     imageProvider: 'pollinations',
     imageApiKey: '',
     imageModel: '',
+    imageBaseModel: 'Tongyi-MAI/Z-Image-Turbo',
+    imageReferenceModel: 'Qwen/Qwen-Image-Edit-2509',
     localSdUrl: '',
+    localSdDenoisingStrength: 0.55,
   }),
-  saveSettings: vi.fn(),
-  SILICONFLOW_MODELS: [],
+  saveSettings: mockSaveSettings,
+  SILICONFLOW_MODELS: [
+    { value: 'Tongyi-MAI/Z-Image-Turbo', label: 'Z-Image-Turbo' },
+    { value: 'Tongyi-MAI/Z-Image', label: 'Z-Image' },
+  ],
 }));
 
 import GenerateStep from '../GenerateStep';
@@ -73,6 +80,20 @@ describe('GenerateStep', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /下一步/ })).toBeTruthy();
     });
+  });
+
+  it('saves a legacy model selection to both imageModel and imageBaseModel', () => {
+    const { container } = render(<GenerateStep {...defaultProps} />);
+
+    fireEvent.click(container.querySelector('input[value="siliconflow"]')!);
+    fireEvent.change(container.querySelector('select')!, {
+      target: { value: 'Tongyi-MAI/Z-Image' },
+    });
+
+    expect(mockSaveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      imageModel: 'Tongyi-MAI/Z-Image',
+      imageBaseModel: 'Tongyi-MAI/Z-Image',
+    }));
   });
 
   it('calls onBack when Back is clicked', () => {
