@@ -21,6 +21,7 @@ const STATES: Record<PetState, SpriteStateInfo> = {
 describe('SaveStep', () => {
   const defaultProps = {
     petId: 'abc-123',
+    runId: 'run-1',
     prompt: 'anime chibi girl',
     states: STATES,
     onComplete: vi.fn(),
@@ -50,12 +51,13 @@ describe('SaveStep', () => {
     expect(btn.disabled).toBe(false);
   });
 
-  it('clicking Save calls invoke save_pet with correct data', async () => {
+  it('clicking Save calls invoke save_pet_from_run with the run and correct data', async () => {
     render(<SaveStep {...defaultProps} />);
     fireEvent.change(screen.getByPlaceholderText(/宠物名称/), { target: { value: 'Chibi' } });
     fireEvent.click(screen.getByRole('button', { name: /保存宠物/ }));
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('save_pet', expect.objectContaining({
+      expect(mockInvoke).toHaveBeenCalledWith('save_pet_from_run', expect.objectContaining({
+        runId: 'run-1',
         pet: expect.objectContaining({ id: 'abc-123', name: 'Chibi', prompt: 'anime chibi girl' }),
       }));
     });

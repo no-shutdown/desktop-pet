@@ -17,11 +17,12 @@ interface Cell {
 type Selections = Record<ActionKey, Cell[]>;
 
 interface Props {
-  onNext: (petId: string, states: Record<PetState, SpriteStateInfo>) => void;
+  onNext: (petId: string, states: Record<PetState, SpriteStateInfo>, runId: string) => void;
   onBack: () => void;
   initialDataUrl?: string | null;
   initialPetId?: string | null;
   initialConfig?: {
+    runId?: string;
     frameW?: number;
     frameH?: number;
     colGap?: number;
@@ -61,6 +62,13 @@ function cellsEqual(a: Cell, b: Cell): boolean {
   return a.col === b.col && a.row === b.row;
 }
 
+function makeStagingRunId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `staging-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function ManualFramePickerStep({
   onNext,
   onBack,
@@ -68,6 +76,7 @@ export default function ManualFramePickerStep({
   initialPetId,
   initialConfig,
 }: Props) {
+  const [stagingRunId] = useState(() => initialConfig?.runId ?? makeStagingRunId());
   const [dataUrl, setDataUrl]       = useState<string | null>(initialDataUrl ?? null);
   const [loadedImg, setLoadedImg]   = useState<HTMLImageElement | null>(null);
   const [frameW, setFrameW]         = useState<number>(initialConfig?.frameW ?? 128);
@@ -320,8 +329,8 @@ export default function ManualFramePickerStep({
     setError(null);
     try {
       const petId = initialPetId ?? crypto.randomUUID();
-      const result = await invoke<Record<PetState, SpriteStateInfo>>('save_frame_selections', {
-        petId,
+      const result = await invoke<Record<PetState, SpriteStateInfo>>('stage_frame_selections', {
+        runId: stagingRunId,
         dataUrl,
         frameW,
         frameH,
@@ -332,7 +341,7 @@ export default function ManualFramePickerStep({
         wavingCells:  selections.waving,
         workingCells: selections.working,
       });
-      onNext(petId, result);
+      onNext(petId, result, stagingRunId);
     } catch (err) {
       setError((err as Error).message ?? String(err));
     } finally {

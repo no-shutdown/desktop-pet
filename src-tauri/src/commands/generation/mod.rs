@@ -583,33 +583,26 @@ pub struct FrameCell {
     pub row: u32,
 }
 
-#[tauri::command]
-pub async fn save_frame_selections(
-    app: tauri::AppHandle,
-    pet_id: String,
-    data_url: String,
+fn write_frame_selections_to_dir(
+    destination_dir: &Path,
+    data_url: &str,
     frame_w: u32,
     frame_h: u32,
     col_gap: u32,
     row_gap: u32,
-    idle_cells: Vec<FrameCell>,
-    walking_cells: Vec<FrameCell>,
-    waving_cells: Vec<FrameCell>,
-    working_cells: Vec<FrameCell>,
+    idle_cells: &[FrameCell],
+    walking_cells: &[FrameCell],
+    waving_cells: &[FrameCell],
+    working_cells: &[FrameCell],
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
-    let bytes = decode_data_url(&data_url)?;
+    let bytes = decode_data_url(data_url)?;
     let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
     let rgba = image.to_rgba8();
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let pet_dir = pet_dir_at(&data_dir, &pet_id)?;
-    let state_entries: [(&str, &Vec<FrameCell>, u32); 4] = [
-        ("idle", &idle_cells, 150),
-        ("walking", &walking_cells, 100),
-        ("waving", &waving_cells, 110),
-        ("working", &working_cells, 120),
+    let state_entries: [(&str, &[FrameCell], u32); 4] = [
+        ("idle", idle_cells, 150),
+        ("walking", walking_cells, 100),
+        ("waving", waving_cells, 110),
+        ("working", working_cells, 120),
     ];
     let mut result = HashMap::new();
     for (state, cells, delay_ms) in &state_entries {
@@ -649,7 +642,7 @@ pub async fn save_frame_selections(
             let frame = imageops::crop_imm(&rgba, src_x, src_y, frame_w, frame_h).to_image();
             imageops::replace(&mut sheet, &frame, index as i64 * frame_w as i64, 0);
         }
-        save_sprite_sheet_png(&pet_dir, state, &sheet)?;
+        save_sprite_sheet_png(destination_dir, state, &sheet)?;
         result.insert(
             state.to_string(),
             SpriteStateInfo {
@@ -665,6 +658,100 @@ pub async fn save_frame_selections(
     Ok(result)
 }
 
+pub(crate) fn stage_frame_selections_at(
+    app_data_dir: &Path,
+    run_id: &str,
+    data_url: &str,
+    frame_w: u32,
+    frame_h: u32,
+    col_gap: u32,
+    row_gap: u32,
+    idle_cells: Vec<FrameCell>,
+    walking_cells: Vec<FrameCell>,
+    waving_cells: Vec<FrameCell>,
+    working_cells: Vec<FrameCell>,
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
+    let selected_dir = run_dir(app_data_dir, run_id)?.join("selected");
+    write_frame_selections_to_dir(
+        &selected_dir,
+        data_url,
+        frame_w,
+        frame_h,
+        col_gap,
+        row_gap,
+        &idle_cells,
+        &walking_cells,
+        &waving_cells,
+        &working_cells,
+    )
+}
+
+#[tauri::command]
+pub async fn stage_frame_selections(
+    app: tauri::AppHandle,
+    run_id: String,
+    data_url: String,
+    frame_w: u32,
+    frame_h: u32,
+    col_gap: u32,
+    row_gap: u32,
+    idle_cells: Vec<FrameCell>,
+    walking_cells: Vec<FrameCell>,
+    waving_cells: Vec<FrameCell>,
+    working_cells: Vec<FrameCell>,
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    stage_frame_selections_at(
+        &data_dir,
+        &run_id,
+        &data_url,
+        frame_w,
+        frame_h,
+        col_gap,
+        row_gap,
+        idle_cells,
+        walking_cells,
+        waving_cells,
+        working_cells,
+    )
+}
+
+#[tauri::command]
+pub async fn save_frame_selections(
+    app: tauri::AppHandle,
+    pet_id: String,
+    data_url: String,
+    frame_w: u32,
+    frame_h: u32,
+    col_gap: u32,
+    row_gap: u32,
+    idle_cells: Vec<FrameCell>,
+    walking_cells: Vec<FrameCell>,
+    waving_cells: Vec<FrameCell>,
+    working_cells: Vec<FrameCell>,
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let pet_dir = pet_dir_at(&data_dir, &pet_id)?;
+    write_frame_selections_to_dir(
+        &pet_dir,
+        &data_url,
+        frame_w,
+        frame_h,
+        col_gap,
+        row_gap,
+        &idle_cells,
+        &walking_cells,
+        &waving_cells,
+        &working_cells,
+    )
+}
+
 #[cfg(test)]
 mod command_tests {
     use super::run::create_run_at;
@@ -674,7 +761,8 @@ mod command_tests {
     use super::{
         assemble_preview_rows, assemble_run_preview_at, chroma_key_for_manifest,
         finish_base_result_at, finish_state_result_at, generation_progress_payload,
-        require_base_complete, require_preview_ready, validate_state_name,
+        require_base_complete, require_preview_ready, stage_frame_selections_at,
+        validate_state_name, FrameCell,
     };
     use base64::Engine as _;
     use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
@@ -701,6 +789,13 @@ mod command_tests {
             row.put_pixel(frame * 128 + 16, 16, Rgba([20, 30, 40, 255]));
         }
         row
+    }
+
+    fn data_url(image: &RgbaImage) -> String {
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png_bytes(image))
+        )
     }
 
     fn test_manifest() -> (TempDir, GenerationRunManifest) {
@@ -755,6 +850,52 @@ mod command_tests {
         assert_eq!(preview.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(preview.get_pixel(0, 128).0, [0, 255, 0, 255]);
         assert_eq!(preview.get_pixel(0, 384).0, [255, 255, 0, 255]);
+    }
+
+    #[test]
+    fn stages_selected_frames_under_the_run_without_creating_pets() {
+        let temp = TempDir::new().unwrap();
+        let source = RgbaImage::from_pixel(2, 2, Rgba([20, 30, 40, 255]));
+        let cell = || vec![FrameCell { col: 0, row: 0 }];
+
+        let result = stage_frame_selections_at(
+            temp.path(),
+            "manual-run",
+            &data_url(&source),
+            2,
+            2,
+            0,
+            0,
+            cell(),
+            cell(),
+            cell(),
+            cell(),
+        )
+        .unwrap();
+
+        assert_eq!(result["idle"].frame_count, 1);
+        for state in ["idle", "walking", "waving", "working"] {
+            assert!(
+                run_dir(temp.path(), "manual-run")
+                    .unwrap()
+                    .join(format!("selected/{state}.png"))
+                    .is_file()
+            );
+        }
+        assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn discards_manifestless_external_staging_runs() {
+        let temp = TempDir::new().unwrap();
+        let run = run_dir(temp.path(), "external-run").unwrap();
+        fs::create_dir_all(run.join("selected")).unwrap();
+        fs::write(run.join("selected/idle.png"), b"staged").unwrap();
+
+        super::run::discard_run_at(temp.path(), "external-run").unwrap();
+
+        assert!(!run.exists());
+        assert!(!temp.path().join("pets").exists());
     }
 
     #[test]

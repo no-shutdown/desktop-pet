@@ -4,13 +4,14 @@ import type { Pet, PetState, SpriteStateInfo } from '../../../types/pet';
 
 interface SaveStepProps {
   petId: string;
+  runId: string;
   prompt: string;
   states: Record<PetState, SpriteStateInfo>;
   onComplete: (pet: Pet) => void;
   onBack: () => void;
 }
 
-export default function SaveStep({ petId, prompt, states, onComplete, onBack }: SaveStepProps) {
+export default function SaveStep({ petId, runId, prompt, states, onComplete, onBack }: SaveStepProps) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,7 @@ export default function SaveStep({ petId, prompt, states, onComplete, onBack }: 
         createdAt: new Date().toISOString(),
         prompt,
       };
-      await invoke('save_pet', { pet });
+      await invoke('save_pet_from_run', { runId, pet });
       onComplete(pet);
     } catch (err) {
       setError((err as Error).message ?? String(err));

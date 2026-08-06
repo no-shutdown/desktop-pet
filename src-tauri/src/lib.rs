@@ -38,6 +38,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_creator,
             commands::pet::save_pet,
+            commands::pet::save_pet_from_run,
             commands::pet::list_pets,
             commands::pet::delete_pet,
             commands::settings::save_window_position,
@@ -47,6 +48,7 @@ pub fn run() {
             commands::generation::assemble_run_preview,
             commands::generation::discard_generation_run,
             commands::generation::save_combined_sprite_sheet,
+            commands::generation::stage_frame_selections,
             commands::generation::save_frame_selections,
             commands::plugin::scan_plugins,
             commands::plugin::read_plugin_file,

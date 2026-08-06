@@ -5,11 +5,12 @@ import { PET_STATE_CATALOG, PET_STATES } from '../../../types/pet';
 
 interface PreviewStepProps {
   petId: string;
+  runId?: string;
   onNext: () => void;
   onBack: () => void;
 }
 
-export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps) {
+export default function PreviewStep({ petId, runId, onNext, onBack }: PreviewStepProps) {
   const [sheetSrcs, setSheetSrcs] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -17,13 +18,15 @@ export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps)
       const appDir = await appDataDir();
       const srcs: Record<string, string> = {};
       for (const state of PET_STATES) {
-        const absPath = await join(appDir, 'pets', petId, `${state}.png`);
+        const absPath = runId
+          ? await join(appDir, 'runs', runId, 'selected', `${state}.png`)
+          : await join(appDir, 'pets', petId, `${state}.png`);
         srcs[state] = convertFileSrc(absPath);
       }
       setSheetSrcs(srcs);
     }
     loadPaths();
-  }, [petId]);
+  }, [petId, runId]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>

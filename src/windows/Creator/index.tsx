@@ -230,7 +230,10 @@ export default function CreatorWindow() {
 
           {step === 'sprite-import' && (
             <ManualFramePickerStep
-              onNext={(petId, states) => { updateData({ petId, petStates: states }); setStep('preview'); }}
+              onNext={(petId, states, runId) => {
+                updateData({ petId, petStates: states, generationRunId: runId });
+                setStep('preview');
+              }}
               onBack={() => {
                 if (mode === 'ai') {
                   setStep('state-generate');
@@ -242,8 +245,11 @@ export default function CreatorWindow() {
               initialDataUrl={mode === 'ai' ? data.generatedDataUrl : null}
               initialPetId={mode === 'ai' ? data.generatedConfig?.petId ?? null : null}
               initialConfig={mode === 'ai' && data.generatedConfig ? {
+                runId: data.generatedConfig.runId,
                 frameW: data.generatedConfig.frameW,
                 frameH: data.generatedConfig.frameH,
+                layout: data.generatedConfig.layout,
+                rowGap: data.generatedConfig.rowGap,
                 idleFrames: data.generatedConfig.idleFrames,
                 walkingFrames: data.generatedConfig.walkingFrames,
                 wavingFrames: data.generatedConfig.wavingFrames,
@@ -255,14 +261,16 @@ export default function CreatorWindow() {
           {step === 'preview' && data.petId && (
             <PreviewStep
               petId={data.petId}
+              runId={data.generationRunId ?? undefined}
               onNext={() => setStep('save')}
               onBack={() => setStep('sprite-import')}
             />
           )}
 
-          {step === 'save' && data.petId && data.petStates && (
+          {step === 'save' && data.petId && data.petStates && data.generationRunId && (
             <SaveStep
               petId={data.petId}
+              runId={data.generationRunId}
               prompt={data.prompt}
               states={data.petStates}
               onComplete={(pet) => {

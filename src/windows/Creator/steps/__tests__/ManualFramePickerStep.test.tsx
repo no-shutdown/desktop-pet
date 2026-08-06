@@ -75,6 +75,7 @@ function actionButtonName(state: PetState, count: number) {
 
 function horizontalConfig(frameCount = 8) {
   return {
+    runId: 'run-1',
     frameW: 128,
     frameH: 128,
     colGap: 7,
@@ -134,9 +135,11 @@ afterEach(() => {
 
 describe('ManualFramePickerStep', () => {
   it('preselects eight cells per canonical row and saves zero gaps', async () => {
+    const onNext = vi.fn();
     render(
       <ManualFramePickerStep
         {...defaultProps}
+        onNext={onNext}
         initialDataUrl="data:image/png;base64,COMBINED"
         initialPetId="run-1"
         initialConfig={horizontalConfig()}
@@ -153,9 +156,9 @@ describe('ManualFramePickerStep', () => {
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith(
-        'save_frame_selections',
+        'stage_frame_selections',
         expect.objectContaining({
-          petId: 'run-1',
+          runId: 'run-1',
           frameW: 128,
           frameH: 128,
           colGap: 0,
@@ -167,6 +170,8 @@ describe('ManualFramePickerStep', () => {
         }),
       );
     });
+    expect(mockInvoke).not.toHaveBeenCalledWith('save_frame_selections', expect.anything());
+    expect(onNext).toHaveBeenCalledWith('run-1', EMPTY_STATES, 'run-1');
   });
 
   it('clears stale selections and applies a changed layout config', async () => {
@@ -240,7 +245,7 @@ describe('ManualFramePickerStep', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /确认导入/ }));
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
-      'save_frame_selections',
+      'stage_frame_selections',
       expect.objectContaining({
         colGap: 4,
         rowGap: 8,
@@ -301,7 +306,7 @@ describe('ManualFramePickerStep', () => {
     const saveButtons = screen.getAllByRole('button');
     fireEvent.click(saveButtons[saveButtons.length - 1]);
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
-      'save_frame_selections',
+      'stage_frame_selections',
       expect.objectContaining({
         dataUrl: 'data:image/png;base64,IMAGE_B',
         idleCells: [{ col: 3, row: 0 }],

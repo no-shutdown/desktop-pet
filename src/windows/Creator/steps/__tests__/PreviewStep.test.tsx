@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { PET_STATE_CATALOG, PET_STATES } from '../../../../types/pet';
 
@@ -25,6 +25,10 @@ describe('PreviewStep', () => {
     onBack: vi.fn(),
   };
 
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('renders catalog labels in PET_STATES order and loads each state path', async () => {
     const { findByText } = render(<PreviewStep {...defaultProps} />);
     for (const state of PET_STATES) {
@@ -44,6 +48,16 @@ describe('PreviewStep', () => {
     const { findAllByRole } = render(<PreviewStep {...defaultProps} />);
     const images = await findAllByRole('img');
     expect(images.length).toBe(4);
+  });
+
+  it('loads staged state paths when a runId is supplied', async () => {
+    render(<PreviewStep {...defaultProps} runId="run-1" />);
+
+    await screen.findAllByRole('img');
+
+    expect(mockConvertFileSrc.mock.calls.map((call) => call[0])).toEqual(
+      PET_STATES.map((state) => `C:\\AppData\\Roaming\\desktop-pet/runs/run-1/selected/${state}.png`),
+    );
   });
 
   it('renders Next and Back buttons', () => {
