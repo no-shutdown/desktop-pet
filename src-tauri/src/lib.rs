@@ -1,10 +1,10 @@
-pub mod models;
 pub mod commands;
+pub mod models;
 
 use tauri::{
-    AppHandle, Builder, Manager,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
+    AppHandle, Builder, Manager,
 };
 
 fn open_or_create_creator(app: &AppHandle) {
@@ -14,15 +14,12 @@ fn open_or_create_creator(app: &AppHandle) {
         let _ = win.set_focus();
     } else {
         use tauri::WebviewWindowBuilder;
-        if let Ok(win) = WebviewWindowBuilder::new(
-            app,
-            "creator",
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("Desktop Pet — Create")
-        .inner_size(860.0, 640.0)
-        .resizable(true)
-        .build()
+        if let Ok(win) =
+            WebviewWindowBuilder::new(app, "creator", tauri::WebviewUrl::App("index.html".into()))
+                .title("Desktop Pet — Create")
+                .inner_size(860.0, 640.0)
+                .resizable(true)
+                .build()
         {
             let _ = win.set_focus();
         }
@@ -45,15 +42,19 @@ pub fn run() {
             commands::pet::delete_pet,
             commands::settings::save_window_position,
             commands::settings::load_window_position,
-            commands::generate::generate_and_assemble,
-            commands::generate::save_combined_sprite_sheet,
-            commands::generate::save_frame_selections,
+            commands::generation::generate_base_preview,
+            commands::generation::generate_state_row,
+            commands::generation::assemble_run_preview,
+            commands::generation::discard_generation_run,
+            commands::generation::save_combined_sprite_sheet,
+            commands::generation::save_frame_selections,
             commands::plugin::scan_plugins,
             commands::plugin::read_plugin_file,
         ])
         .setup(|app| {
             let show_item = MenuItem::with_id(app, "show", "Show Pet", true, None::<&str>)?;
-            let creator_item = MenuItem::with_id(app, "creator", "Open Creator", true, None::<&str>)?;
+            let creator_item =
+                MenuItem::with_id(app, "creator", "Open Creator", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&show_item, &creator_item, &quit_item])?;
 

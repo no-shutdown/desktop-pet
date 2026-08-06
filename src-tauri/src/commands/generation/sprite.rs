@@ -80,6 +80,14 @@ pub fn choose_chroma_key(reference: Option<&RgbaImage>) -> ChromaKey {
     best
 }
 
+pub fn chroma_key_from_hex(hex: &str) -> Result<ChromaKey, String> {
+    CHROMA_KEY_CANDIDATES
+        .iter()
+        .copied()
+        .find(|candidate| candidate.hex.eq_ignore_ascii_case(hex.trim()))
+        .ok_or_else(|| format!("unknown chroma key: {hex}"))
+}
+
 pub fn apply_chroma_key(image: &mut RgbaImage, key: &ChromaKey, threshold: u8) {
     const RAMP_WIDTH: f32 = 16.0;
     let threshold = f32::from(threshold);
@@ -114,6 +122,19 @@ pub fn normalize_horizontal_row(bytes: &[u8], key: &ChromaKey) -> Result<RgbaIma
         .to_rgba8();
     apply_chroma_key(&mut row, key, 32);
     Ok(row)
+}
+
+pub fn normalize_base_image(bytes: &[u8], key: &ChromaKey) -> Result<RgbaImage, String> {
+    let decoded =
+        image::load_from_memory(bytes).map_err(|error| format!("decode image: {error}"))?;
+    let mut base = decoded
+        .resize_exact(FRAME_W, FRAME_H, FilterType::Lanczos3)
+        .to_rgba8();
+    apply_chroma_key(&mut base, key, 32);
+    if !base.pixels().any(|pixel| pixel[3] != 0) {
+        return Err("canonical base image is empty after chroma keying".to_string());
+    }
+    Ok(base)
 }
 
 pub fn validate_sprite_row(
@@ -199,8 +220,9 @@ fn squared_rgb_distance(left: [u8; 3], right: [u8; 3]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_chroma_key, assemble_rows, choose_chroma_key, image_to_data_url,
-        normalize_horizontal_row, validate_sprite_row, ChromaKey, CHROMA_KEY_CANDIDATES,
+        apply_chroma_key, assemble_rows, choose_chroma_key, chroma_key_from_hex, image_to_data_url,
+        normalize_base_image, normalize_horizontal_row, validate_sprite_row, ChromaKey,
+        CHROMA_KEY_CANDIDATES,
     };
     use crate::commands::generation::types::{DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W};
     use base64::Engine;
@@ -283,6 +305,35 @@ mod tests {
             (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H)
         );
         assert_eq!(normalized.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn normalizes_a_canonical_base_to_one_nonempty_frame() {
+        let mut source = RgbaImage::from_pixel(16, 16, Rgba([255, 0, 255, 255]));
+        source.put_pixel(8, 8, Rgba([20, 30, 40, 255]));
+        let key = CHROMA_KEY_CANDIDATES[0];
+
+        let normalized = normalize_base_image(&png_bytes(&source), &key).unwrap();
+
+        assert_eq!(normalized.dimensions(), (FRAME_W, FRAME_H));
+        assert!(normalized.pixels().any(|pixel| pixel[3] != 0));
+        assert_eq!(normalized.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rejects_a_canonical_base_that_is_empty_after_keying() {
+        let source = RgbaImage::from_pixel(16, 16, Rgba([255, 0, 255, 255]));
+
+        let error =
+            normalize_base_image(&png_bytes(&source), &CHROMA_KEY_CANDIDATES[0]).unwrap_err();
+
+        assert!(error.contains("empty"));
+    }
+
+    #[test]
+    fn resolves_only_known_manifest_chroma_hexes() {
+        assert_eq!(chroma_key_from_hex("#00FFFF").unwrap().name, "cyan");
+        assert!(chroma_key_from_hex("#123456").is_err());
     }
 
     #[test]
