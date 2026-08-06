@@ -81,18 +81,39 @@ export default function ManualFramePickerStep({
   const [error, setError]           = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageIdentityRef = useRef(0);
+  const loadedImageIdentityRef = useRef<number | null>(null);
 
-  // Load image from initialDataUrl when provided (AI-generated flow).
+  // Treat every incoming image URL as a new image identity and ignore stale loads.
   useEffect(() => {
+    const imageIdentity = ++imageIdentityRef.current;
+    loadedImageIdentityRef.current = null;
+    setDataUrl(initialDataUrl ?? null);
+    setLoadedImg(null);
+    setSelections(createEmptySelections());
+
     if (!initialDataUrl) return;
+
     const img = new Image();
-    img.onload = () => setLoadedImg(img);
+    img.onload = () => {
+      if (imageIdentity === imageIdentityRef.current) {
+        loadedImageIdentityRef.current = imageIdentity;
+        setLoadedImg(img);
+      }
+    };
     img.src = initialDataUrl;
+
+    return () => {
+      img.onload = null;
+    };
   }, [initialDataUrl]);
 
   // Apply generated layout settings and auto-fill its four state rows.
   useEffect(() => {
-    if (!initialConfig) return;
+    if (!initialConfig) {
+      setSelections(createEmptySelections());
+      return;
+    }
 
     const layout = initialConfig.layout ?? 'horizontalRows';
     setFrameW(initialConfig.frameW ?? 128);
@@ -100,7 +121,7 @@ export default function ManualFramePickerStep({
     setColGap(layout === 'horizontalRows' ? 0 : initialConfig.colGap ?? 0);
     setRowGap(layout === 'horizontalRows' ? 0 : initialConfig.rowGap ?? 0);
 
-    if (!loadedImg) return;
+    if (!loadedImg || loadedImageIdentityRef.current !== imageIdentityRef.current) return;
 
     const frameCounts: Record<PetState, number> = {
       idle: initialConfig.idleFrames ?? 0,
@@ -258,13 +279,24 @@ export default function ManualFramePickerStep({
   );
 
   function handleFile(file: File) {
+    const imageIdentity = ++imageIdentityRef.current;
+    loadedImageIdentityRef.current = null;
     setError(null);
+    setDataUrl(null);
+    setLoadedImg(null);
+    setSelections(createEmptySelections());
+
     const reader = new FileReader();
     reader.onload = (ev) => {
+      if (imageIdentity !== imageIdentityRef.current) return;
+
       const url = (ev.target as FileReader).result as string;
       setDataUrl(url);
       const img = new Image();
       img.onload = () => {
+        if (imageIdentity !== imageIdentityRef.current) return;
+
+        loadedImageIdentityRef.current = imageIdentity;
         setLoadedImg(img);
         // Auto-suggest frame sizes based on image dimensions.
         const suggestH = Math.round(img.height / 4);

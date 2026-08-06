@@ -24,6 +24,8 @@ const originalGetContext = HTMLCanvasElement.prototype.getContext;
 
 class MockImage {
   static nextSize = { width: 1024, height: 512 };
+  static deferNextLoad = false;
+  static pendingLoads: MockImage[] = [];
 
   naturalWidth = MockImage.nextSize.width;
   naturalHeight = MockImage.nextSize.height;
@@ -32,6 +34,10 @@ class MockImage {
   onload: (() => void) | null = null;
 
   set src(_value: string) {
+    if (MockImage.deferNextLoad) {
+      MockImage.pendingLoads.push(this);
+      return;
+    }
     queueMicrotask(() => this.onload?.());
   }
 }
@@ -39,7 +45,9 @@ class MockImage {
 let activeFileReader: MockFileReader | undefined;
 
 class MockFileReader {
-  result = 'data:image/png;base64,EXTERNAL';
+  static nextResult = 'data:image/png;base64,EXTERNAL';
+
+  result = MockFileReader.nextResult;
   onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
   readAsDataURL = vi.fn();
 
@@ -83,9 +91,29 @@ function externalFile() {
   return new File(['external'], 'sheet.png', { type: 'image/png' });
 }
 
+function setCanvasBounds(canvas: HTMLCanvasElement) {
+  Object.defineProperty(canvas, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      bottom: canvas.height,
+      height: canvas.height,
+      left: 0,
+      right: canvas.width,
+      top: 0,
+      width: canvas.width,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   MockImage.nextSize = { width: 1024, height: 512 };
+  MockImage.deferNextLoad = false;
+  MockImage.pendingLoads = [];
+  MockFileReader.nextResult = 'data:image/png;base64,EXTERNAL';
   mockInvoke.mockResolvedValue(EMPTY_STATES);
   activeFileReader = undefined;
   vi.stubGlobal('Image', MockImage);
@@ -200,20 +228,7 @@ describe('ManualFramePickerStep', () => {
     fireEvent.change(gridInputs[3], { target: { value: '8' } });
 
     const canvas = container.querySelector('canvas')!;
-    Object.defineProperty(canvas, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => ({
-        bottom: canvas.height,
-        height: canvas.height,
-        left: 0,
-        right: canvas.width,
-        top: 0,
-        width: canvas.width,
-        x: 0,
-        y: 0,
-        toJSON: () => ({}),
-      }),
-    });
+    setCanvasBounds(canvas);
 
     for (const [index, state] of PET_STATES.entries()) {
       fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
@@ -235,5 +250,134 @@ describe('ManualFramePickerStep', () => {
         workingCells: [{ col: 0, row: 1 }],
       }),
     ));
+  });
+
+  it('clears old external selections before saving selections from the replacement image', async () => {
+    MockImage.nextSize = { width: 512, height: 256 };
+    const { container } = render(<ManualFramePickerStep {...defaultProps} />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    async function upload(result: string) {
+      MockFileReader.nextResult = result;
+      fireEvent.change(input, { target: { files: [externalFile()] } });
+      await act(async () => {
+        activeFileReader?.onload?.({ target: activeFileReader } as unknown as ProgressEvent<FileReader>);
+      });
+      await waitFor(() => expect(screen.getByRole('button', { name: actionButtonName('idle', 0) })).toBeTruthy());
+    }
+
+    await upload('data:image/png;base64,IMAGE_A');
+    let canvas = container.querySelector('canvas')!;
+    setCanvasBounds(canvas);
+
+    for (const [index, state] of PET_STATES.entries()) {
+      fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
+      fireEvent.click(canvas, {
+        clientX: 10 + (index % 3) * 140,
+        clientY: 10 + Math.floor(index / 3) * 80,
+      });
+    }
+    await waitFor(() => expect(screen.getByRole('button', { name: actionButtonName('idle', 1) })).toBeTruthy());
+
+    await upload('data:image/png;base64,IMAGE_B');
+    canvas = container.querySelector('canvas')!;
+    setCanvasBounds(canvas);
+    await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      expect(buttons[buttons.length - 1]).toBeDisabled();
+    });
+
+    const replacementCells = [
+      { clientX: 430, clientY: 10 },
+      { clientX: 290, clientY: 10 },
+      { clientX: 150, clientY: 10 },
+      { clientX: 290, clientY: 90 },
+    ];
+    for (const [index, state] of PET_STATES.entries()) {
+      fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
+      fireEvent.click(canvas, replacementCells[index]);
+    }
+
+    const saveButtons = screen.getAllByRole('button');
+    fireEvent.click(saveButtons[saveButtons.length - 1]);
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      'save_frame_selections',
+      expect.objectContaining({
+        dataUrl: 'data:image/png;base64,IMAGE_B',
+        idleCells: [{ col: 3, row: 0 }],
+        walkingCells: [{ col: 2, row: 0 }],
+        wavingCells: [{ col: 1, row: 0 }],
+        workingCells: [{ col: 2, row: 1 }],
+      }),
+    ));
+  });
+
+  it('clears canonical selections when the image and initial config are replaced by external data', async () => {
+    const { rerender } = render(
+      <ManualFramePickerStep
+        {...defaultProps}
+        initialDataUrl="data:image/png;base64,CANONICAL_A"
+        initialPetId="run-1"
+        initialConfig={horizontalConfig()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: actionButtonName('idle', 8) })).toBeTruthy());
+
+    rerender(
+      <ManualFramePickerStep
+        {...defaultProps}
+        initialDataUrl="data:image/png;base64,EXTERNAL_B"
+        initialPetId={null}
+        initialConfig={undefined}
+      />,
+    );
+
+    await waitFor(() => {
+      for (const state of PET_STATES) {
+        expect(screen.getByRole('button', { name: actionButtonName(state, 0) })).toBeTruthy();
+      }
+    });
+  });
+
+  it('waits for the replacement image before applying a changed canonical config', async () => {
+    const { rerender } = render(
+      <ManualFramePickerStep
+        {...defaultProps}
+        initialDataUrl="data:image/png;base64,CANONICAL_A"
+        initialPetId="run-1"
+        initialConfig={horizontalConfig(8)}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: actionButtonName('idle', 8) })).toBeTruthy());
+
+    MockImage.deferNextLoad = true;
+    rerender(
+      <ManualFramePickerStep
+        {...defaultProps}
+        initialDataUrl="data:image/png;base64,CANONICAL_B"
+        initialPetId="run-1"
+        initialConfig={horizontalConfig(2)}
+      />,
+    );
+
+    await waitFor(() => {
+      const buttons = screen.getAllByRole('button');
+      expect(buttons[buttons.length - 1]).toBeDisabled();
+    });
+
+    MockImage.deferNextLoad = false;
+    await act(async () => {
+      for (const image of MockImage.pendingLoads) {
+        image.onload?.();
+      }
+    });
+
+    await waitFor(() => {
+      for (const state of PET_STATES) {
+        expect(screen.getByRole('button', { name: actionButtonName(state, 2) })).toBeTruthy();
+      }
+    });
   });
 });
