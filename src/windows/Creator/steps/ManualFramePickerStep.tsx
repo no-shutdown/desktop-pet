@@ -83,10 +83,12 @@ export default function ManualFramePickerStep({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageIdentityRef = useRef(0);
   const loadedImageIdentityRef = useRef<number | null>(null);
+  const imageSourceRef = useRef<'initial' | 'external'>(initialDataUrl ? 'initial' : 'external');
 
   // Treat every incoming image URL as a new image identity and ignore stale loads.
   useEffect(() => {
     const imageIdentity = ++imageIdentityRef.current;
+    imageSourceRef.current = initialDataUrl ? 'initial' : 'external';
     loadedImageIdentityRef.current = null;
     setDataUrl(initialDataUrl ?? null);
     setLoadedImg(null);
@@ -110,7 +112,7 @@ export default function ManualFramePickerStep({
 
   // Apply generated layout settings and auto-fill its four state rows.
   useEffect(() => {
-    if (!initialConfig) {
+    if (!initialConfig || imageSourceRef.current !== 'initial') {
       setSelections(createEmptySelections());
       return;
     }
@@ -280,6 +282,7 @@ export default function ManualFramePickerStep({
 
   function handleFile(file: File) {
     const imageIdentity = ++imageIdentityRef.current;
+    imageSourceRef.current = 'external';
     loadedImageIdentityRef.current = null;
     setError(null);
     setDataUrl(null);

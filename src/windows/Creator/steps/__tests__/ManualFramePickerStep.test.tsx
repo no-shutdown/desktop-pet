@@ -312,6 +312,34 @@ describe('ManualFramePickerStep', () => {
     ));
   });
 
+  it('does not reapply generated selections after replacing the generated image with an external upload', async () => {
+    MockImage.nextSize = { width: 1024, height: 512 };
+    const { container } = render(
+      <ManualFramePickerStep
+        {...defaultProps}
+        initialDataUrl="data:image/png;base64,GENERATED"
+        initialPetId="run-1"
+        initialConfig={horizontalConfig()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: actionButtonName('idle', 8) })).toBeTruthy());
+
+    MockImage.nextSize = { width: 512, height: 256 };
+    MockFileReader.nextResult = 'data:image/png;base64,EXTERNAL_AFTER_GENERATED';
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [externalFile()] } });
+    await act(async () => {
+      activeFileReader?.onload?.({ target: activeFileReader } as unknown as ProgressEvent<FileReader>);
+    });
+
+    await waitFor(() => {
+      for (const state of PET_STATES) {
+        expect(screen.getByRole('button', { name: actionButtonName(state, 0) })).toBeTruthy();
+      }
+    });
+  });
+
   it('clears canonical selections when the image and initial config are replaced by external data', async () => {
     const { rerender } = render(
       <ManualFramePickerStep
