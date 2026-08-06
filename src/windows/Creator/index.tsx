@@ -39,6 +39,7 @@ export default function CreatorWindow() {
   const [data, setData] = useState<WizardData>(INITIAL_WIZARD_DATA);
   const [savedPet, setSavedPet] = useState<Pet | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [generationBusy, setGenerationBusy] = useState(false);
 
   function updateData(patch: Partial<WizardData>) {
     setData((previous) => ({ ...previous, ...patch }));
@@ -88,8 +89,9 @@ export default function CreatorWindow() {
           <h1 style={{ margin: 0, fontSize: 24 }}>Create your desktop pet</h1>
           <button
             onClick={() => setShowSettings(true)}
+            disabled={generationBusy}
             title="Settings"
-            style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', color: '#718096', fontSize: 18, lineHeight: 1 }}
+            style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: generationBusy ? 'not-allowed' : 'pointer', color: '#718096', fontSize: 18, lineHeight: 1, opacity: generationBusy ? 0.5 : 1 }}
           >
             ⚙️
           </button>
@@ -124,8 +126,9 @@ export default function CreatorWindow() {
         <h1 style={{ margin: 0, fontSize: 24 }}>Create your desktop pet</h1>
         <button
           onClick={() => setShowSettings(true)}
+          disabled={generationBusy}
           title="Settings"
-          style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', color: '#718096', fontSize: 18, lineHeight: 1 }}
+          style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: generationBusy ? 'not-allowed' : 'pointer', color: '#718096', fontSize: 18, lineHeight: 1, opacity: generationBusy ? 0.5 : 1 }}
         >
           ⚙️
         </button>
@@ -200,6 +203,7 @@ export default function CreatorWindow() {
               prompt={data.prompt}
               referenceDataUrl={data.photoDataUrl}
               runId={data.generationRunId ?? undefined}
+              onBusyChange={setGenerationBusy}
               onNext={({ runId, dataUrl }) => {
                 updateData({ generationRunId: runId, baseDataUrl: dataUrl });
                 setStep('state-generate');
@@ -215,6 +219,7 @@ export default function CreatorWindow() {
             <StateGenerationStep
               runId={data.generationRunId}
               baseDataUrl={data.baseDataUrl}
+              onBusyChange={setGenerationBusy}
               onNext={(dataUrl: string, config: GeneratedSpriteConfig) => {
                 updateData({ generatedDataUrl: dataUrl, generatedConfig: config });
                 setStep('sprite-import');

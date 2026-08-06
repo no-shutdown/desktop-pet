@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { PET_STATES, type PetState } from '../../../types/pet';
@@ -41,6 +41,7 @@ interface StateGenerationStepProps {
   baseDataUrl?: string | null;
   onNext: (dataUrl: string, config: GeneratedSpriteConfig) => void;
   onBack: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 type Status = 'idle' | 'generating' | 'assembling' | 'error' | 'ready';
@@ -63,7 +64,11 @@ export default function StateGenerationStep({
   baseDataUrl,
   onNext,
   onBack,
+  onBusyChange,
 }: StateGenerationStepProps) {
+  const mountedRef = useRef(true);
+  const busyRef = useRef(false);
+  const busyCallbackRef = useRef(onBusyChange);
   const [status, setStatus] = useState<Status>('idle');
   const [settings, setSettings] = useState(loadSettings);
   const [completedRows, setCompletedRows] = useState<Partial<Record<PetState, StateRowResult>>>({});
@@ -72,13 +77,29 @@ export default function StateGenerationStep({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState({ state: null as PetState | null, current: 0, total: 4 });
 
+  busyCallbackRef.current = onBusyChange;
+
+  function reportBusy(busy: boolean) {
+    if (busyRef.current === busy) return;
+    busyRef.current = busy;
+    busyCallbackRef.current?.(busy);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reportBusy(false);
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
 
     void listen<GenerationProgress>('generation-progress', (event) => {
       const payload = event.payload;
-      if (payload.runId !== runId) return;
+      if (!mountedRef.current || payload.runId !== runId) return;
 
       const state = PET_STATES.includes(payload.state as PetState)
         ? payload.state as PetState
@@ -116,6 +137,7 @@ export default function StateGenerationStep({
     if (status === 'generating' || status === 'assembling') return;
 
     const pendingStates = PET_STATES.filter((state) => !completedRows[state]);
+    reportBusy(true);
     setStatus('generating');
     setErrorMsg(null);
     setFailedState(null);
@@ -135,14 +157,17 @@ export default function StateGenerationStep({
           localSdUrl: settings.localSdUrl || null,
           denoisingStrength: settings.localSdDenoisingStrength,
         });
+        if (!mountedRef.current) return;
         setCompletedRows((previous) => ({ ...previous, [state]: result }));
         setProgress({ state, current: PET_STATES.indexOf(state) + 1, total: 4 });
       }
 
+      if (!mountedRef.current) return;
       currentState = null;
       setActiveState(null);
       setStatus('assembling');
       const assembled = await invoke<AssembleRunPreviewResult>('assemble_run_preview', { runId });
+      if (!mountedRef.current) return;
       const config: GeneratedSpriteConfig = {
         petId: runId,
         runId,
@@ -156,12 +181,16 @@ export default function StateGenerationStep({
         workingFrames: 8,
       };
       setStatus('ready');
+      reportBusy(false);
       onNext(assembled.dataUrl, config);
     } catch (error) {
+      if (!mountedRef.current) return;
       setActiveState(null);
       setFailedState(currentState);
       setErrorMsg(messageFromError(error));
       setStatus('error');
+    } finally {
+      reportBusy(false);
     }
   }
 

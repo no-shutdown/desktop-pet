@@ -122,6 +122,34 @@ describe('StateGenerationStep', () => {
     ))).toBe(true);
   });
 
+  it('reports state generation busy while the row command is pending', async () => {
+    let resolveFirstRow!: (value: ReturnType<typeof row>) => void;
+    let firstCall = true;
+    mockInvoke.mockImplementation((command: string, args: { state?: string }) => {
+      if (command === 'generate_state_row' && firstCall) {
+        firstCall = false;
+        return new Promise((resolve) => { resolveFirstRow = resolve; });
+      }
+      if (command === 'generate_state_row') return Promise.resolve(row(args.state!));
+      return Promise.resolve({
+        runId: 'run-1',
+        dataUrl: 'data:image/png;base64,combined',
+        frameW: 128,
+        frameH: 128,
+        frameCount: 8,
+        rowGap: 0,
+      });
+    });
+    const onBusyChange = vi.fn();
+    render(<StateGenerationStep {...defaultProps} onBusyChange={onBusyChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate all states' }));
+
+    await waitFor(() => expect(onBusyChange).toHaveBeenCalledWith(true));
+    resolveFirstRow(row('idle'));
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+
   it('ignores progress events from another run', async () => {
     let resolveFirstRow!: (value: ReturnType<typeof row>) => void;
     let firstCall = true;

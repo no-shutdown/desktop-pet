@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -29,6 +29,7 @@ interface GenerateStepProps {
   runId?: string;
   onNext: (base: { runId: string; dataUrl: string }) => void;
   onBack: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 type Status = 'idle' | 'generating' | 'ready' | 'error';
@@ -59,13 +60,33 @@ export default function GenerateStep({
   runId,
   onNext,
   onBack,
+  onBusyChange,
 }: GenerateStepProps) {
   const [stableRunId] = useState(() => runId ?? makeRunId());
+  const mountedRef = useRef(true);
+  const busyRef = useRef(false);
+  const busyCallbackRef = useRef(onBusyChange);
   const [status, setStatus] = useState<Status>('idle');
   const [preview, setPreview] = useState<BasePreviewResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 1 });
   const [settings, setSettings] = useState(loadSettings);
+
+  busyCallbackRef.current = onBusyChange;
+
+  function reportBusy(busy: boolean) {
+    if (busyRef.current === busy) return;
+    busyRef.current = busy;
+    busyCallbackRef.current?.(busy);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reportBusy(false);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -73,7 +94,7 @@ export default function GenerateStep({
 
     void listen<GenerationProgress>('generation-progress', (event) => {
       const payload = event.payload;
-      if (payload.runId !== stableRunId || payload.phase !== 'base') return;
+      if (!mountedRef.current || payload.runId !== stableRunId || payload.phase !== 'base') return;
       setProgress({ current: payload.current, total: payload.total });
     }).then((cleanup) => {
       if (active) {
@@ -102,6 +123,7 @@ export default function GenerateStep({
   async function handleGenerate() {
     if (status === 'generating') return;
 
+    reportBusy(true);
     setStatus('generating');
     setPreview(null);
     setErrorMsg(null);
@@ -119,11 +141,15 @@ export default function GenerateStep({
         localSdUrl: settings.localSdUrl || null,
         denoisingStrength: settings.localSdDenoisingStrength,
       });
+      if (!mountedRef.current) return;
       setPreview(result);
       setStatus('ready');
     } catch (error) {
+      if (!mountedRef.current) return;
       setErrorMsg(messageFromError(error));
       setStatus('error');
+    } finally {
+      reportBusy(false);
     }
   }
 

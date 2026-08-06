@@ -77,6 +77,19 @@ describe('GenerateStep', () => {
     expect(mockInvoke.mock.calls.some(([name]) => name === 'generate_and_assemble')).toBe(false);
   });
 
+  it('reports Base generation busy until the async command settles', async () => {
+    let resolveInvoke!: (value: unknown) => void;
+    mockInvoke.mockReturnValue(new Promise((resolve) => { resolveInvoke = resolve; }));
+    const onBusyChange = vi.fn();
+    render(<GenerateStep {...defaultProps} onBusyChange={onBusyChange} runId="run-1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+
+    await waitFor(() => expect(onBusyChange).toHaveBeenCalledWith(true));
+    resolveInvoke({ runId: 'run-1', dataUrl: 'base', chromaKey: '#FF00FF' });
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+
   it('displays the Base preview and confirms only the Base result', async () => {
     const onNext = vi.fn();
     render(<GenerateStep {...defaultProps} onNext={onNext} runId="run-1" />);
