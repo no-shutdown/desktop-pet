@@ -6,6 +6,16 @@ pub const API_FRAME_W: u32 = 256;
 pub const API_FRAME_H: u32 = 256;
 pub const DEFAULT_FRAME_COUNT: u32 = 8;
 
+#[derive(Clone, Debug)]
+pub struct ProviderConfig {
+    pub provider: String,
+    pub api_key: Option<String>,
+    pub base_model: String,
+    pub reference_model: String,
+    pub local_sd_url: String,
+    pub denoising_strength: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateDefinition {
     pub key: &'static str,
