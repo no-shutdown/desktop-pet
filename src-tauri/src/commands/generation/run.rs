@@ -10,17 +10,25 @@ const RUNS_DIR: &str = "runs";
 const MANIFEST_FILE: &str = "manifest.json";
 const BASE_PATH: &str = "base.png";
 
-pub fn validate_run_id(run_id: &str) -> Result<(), String> {
-    if run_id.is_empty() {
-        return Err("generation run id cannot be empty".to_string());
+fn validate_safe_id(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{label} cannot be empty"));
     }
-    if !run_id
+    if !value
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
     {
-        return Err("generation run id contains an invalid path component".to_string());
+        return Err(format!("{label} contains an invalid path component"));
     }
     Ok(())
+}
+
+pub fn validate_run_id(run_id: &str) -> Result<(), String> {
+    validate_safe_id(run_id, "generation run id")
+}
+
+pub fn validate_pet_id(pet_id: &str) -> Result<(), String> {
+    validate_safe_id(pet_id, "pet id")
 }
 
 pub fn runs_dir(app_data_dir: &Path) -> PathBuf {
@@ -39,6 +47,16 @@ pub fn run_dir(app_data_dir: &Path, run_id: &str) -> Result<PathBuf, String> {
 
 pub fn manifest_path(app_data_dir: &Path, run_id: &str) -> Result<PathBuf, String> {
     Ok(run_dir(app_data_dir, run_id)?.join(MANIFEST_FILE))
+}
+
+pub fn pet_dir_at(app_data_dir: &Path, pet_id: &str) -> Result<PathBuf, String> {
+    validate_pet_id(pet_id)?;
+    let root = app_data_dir.join("pets");
+    let candidate = root.join(pet_id);
+    if !candidate.starts_with(&root) {
+        return Err("pet path escaped the pets directory".to_string());
+    }
+    Ok(candidate)
 }
 
 fn row_path(app_data_dir: &Path, run_id: &str, state: &str) -> Result<PathBuf, String> {
@@ -506,5 +524,36 @@ mod tests {
 
         assert!(mark_state_generating(temp.path(), "run-1", "jumping").is_err());
         assert_eq!(load_manifest(temp.path(), "run-1").unwrap(), original);
+    }
+
+    #[test]
+    fn pet_ids_reject_empty_traversal_and_rooted_forms_but_accept_existing_style_ids() {
+        for pet_id in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "nested/pet",
+            r"nested\pet",
+            r"C:\outside",
+            "/outside",
+        ] {
+            assert!(
+                validate_pet_id(pet_id).is_err(),
+                "pet id should be rejected: {pet_id:?}"
+            );
+        }
+
+        assert!(validate_pet_id("pet-1234_abcd").is_ok());
+    }
+
+    #[test]
+    fn pet_dir_at_keeps_valid_ids_inside_the_pets_directory() {
+        let temp = TempDir::new().unwrap();
+
+        let path = pet_dir_at(temp.path(), "pet-1234").unwrap();
+
+        assert_eq!(path, temp.path().join("pets/pet-1234"));
+        assert!(path.starts_with(temp.path().join("pets")));
     }
 }

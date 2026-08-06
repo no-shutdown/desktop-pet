@@ -6,8 +6,9 @@ pub mod types;
 
 pub use run::{
     create_run_at, discard_run_at, load_manifest, manifest_path, mark_base_complete,
-    mark_base_generating, mark_failed, mark_state_complete, mark_state_generating,
-    reset_rows_after_base_retry, run_dir, runs_dir, save_manifest, validate_run_id,
+    mark_base_generating, mark_failed, mark_state_complete, mark_state_generating, pet_dir_at,
+    reset_rows_after_base_retry, run_dir, runs_dir, save_manifest, validate_pet_id,
+    validate_run_id,
 };
 pub use types::{AssembleRunPreviewResult, BasePreviewResult, StateRowResult};
 
@@ -28,7 +29,7 @@ use self::run::{
 };
 use self::sprite::{
     assemble_rows, choose_chroma_key, chroma_key_from_hex, image_to_data_url, normalize_base_image,
-    normalize_horizontal_row, validate_sprite_row,
+    normalize_horizontal_row, validate_sprite_row, ChromaKey,
 };
 use self::types::{
     state_definition, state_definitions, ArtifactStatus, GenerationRunManifest, ProviderConfig,
@@ -39,6 +40,7 @@ const DEFAULT_BASE_MODEL: &str = "Tongyi-MAI/Z-Image-Turbo";
 const DEFAULT_REFERENCE_MODEL: &str = "Qwen/Qwen-Image-Edit-2509";
 const DEFAULT_LOCAL_SD_URL: &str = "http://localhost:7860";
 const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
+const MAX_RUN_ERROR_BYTES: usize = 512;
 
 pub fn validate_state_name(state: &str) -> Result<&'static StateDefinition, String> {
     state_definition(state).ok_or_else(|| format!("unknown generation state: {state}"))
@@ -157,6 +159,21 @@ fn redact_secret(error: &str, secret: Option<&str>) -> String {
         .unwrap_or_else(|| error.to_string())
 }
 
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn bounded_run_error(error: &str, secret: Option<&str>) -> String {
+    truncate_utf8(&redact_secret(error, secret), MAX_RUN_ERROR_BYTES)
+}
+
 fn mark_command_failed(
     app_data_dir: &Path,
     run_id: &str,
@@ -164,9 +181,34 @@ fn mark_command_failed(
     error: &str,
     api_key: Option<&str>,
 ) -> String {
-    let safe_error = redact_secret(error, api_key);
+    let safe_error = bounded_run_error(error, api_key);
     let _ = fail_run_artifact(app_data_dir, run_id, artifact, &safe_error);
     safe_error
+}
+
+pub(crate) fn chroma_key_for_manifest(
+    manifest: &GenerationRunManifest,
+) -> Result<ChromaKey, String> {
+    chroma_key_from_hex(&manifest.chroma_key)
+}
+
+pub(crate) fn generation_progress_payload(
+    run_id: &str,
+    phase: &str,
+    state: Option<&str>,
+    current: u32,
+    total: u32,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "runId": run_id,
+        "phase": phase,
+        "current": current,
+        "total": total,
+    });
+    if let Some(state) = state {
+        payload["state"] = serde_json::Value::String(state.to_string());
+    }
+    payload
 }
 
 fn emit_progress(app: &tauri::AppHandle, payload: serde_json::Value) -> Result<(), String> {
@@ -176,6 +218,148 @@ fn emit_progress(app: &tauri::AppHandle, payload: serde_json::Value) -> Result<(
 
 fn assemble_preview_rows(rows: &[RgbaImage]) -> Result<RgbaImage, String> {
     assemble_rows(rows, FRAME_W, FRAME_H)
+}
+
+pub(crate) fn finish_base_result_at(
+    app_data_dir: &Path,
+    run_id: &str,
+    selected_key: &ChromaKey,
+    provider_result: Result<Vec<u8>, String>,
+    api_key: Option<&str>,
+) -> Result<RgbaImage, String> {
+    let generated_bytes = match provider_result {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(mark_command_failed(
+                app_data_dir,
+                run_id,
+                "base",
+                &error,
+                api_key,
+            ));
+        }
+    };
+    let base = match normalize_base_image(&generated_bytes, selected_key) {
+        Ok(base) => base,
+        Err(error) => {
+            return Err(mark_command_failed(
+                app_data_dir,
+                run_id,
+                "base",
+                &error,
+                api_key,
+            ));
+        }
+    };
+    let base_path = run_dir(app_data_dir, run_id)?.join("base.png");
+    if let Err(error) = write_png(&base_path, &base) {
+        return Err(mark_command_failed(
+            app_data_dir,
+            run_id,
+            "base",
+            &error,
+            api_key,
+        ));
+    }
+    if let Err(error) = complete_base(app_data_dir, run_id) {
+        return Err(mark_command_failed(
+            app_data_dir,
+            run_id,
+            "base",
+            &error,
+            api_key,
+        ));
+    }
+    Ok(base)
+}
+
+pub(crate) fn finish_state_result_at(
+    app_data_dir: &Path,
+    run_id: &str,
+    state: &str,
+    selected_key: &ChromaKey,
+    provider_result: Result<Vec<u8>, String>,
+    api_key: Option<&str>,
+) -> Result<RgbaImage, String> {
+    let generated_bytes = match provider_result {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(mark_command_failed(
+                app_data_dir,
+                run_id,
+                state,
+                &error,
+                api_key,
+            ));
+        }
+    };
+    let row = match normalize_horizontal_row(&generated_bytes, selected_key) {
+        Ok(row) => row,
+        Err(error) => {
+            return Err(mark_command_failed(
+                app_data_dir,
+                run_id,
+                state,
+                &error,
+                api_key,
+            ));
+        }
+    };
+    if let Err(error) = validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT) {
+        return Err(mark_command_failed(
+            app_data_dir,
+            run_id,
+            state,
+            &error,
+            api_key,
+        ));
+    }
+    let row_path = run_dir(app_data_dir, run_id)?.join(format!("rows/{state}.png"));
+    if let Err(error) = write_png(&row_path, &row) {
+        return Err(mark_command_failed(
+            app_data_dir,
+            run_id,
+            state,
+            &error,
+            api_key,
+        ));
+    }
+    if let Err(error) = complete_state(app_data_dir, run_id, state) {
+        return Err(mark_command_failed(
+            app_data_dir,
+            run_id,
+            state,
+            &error,
+            api_key,
+        ));
+    }
+    Ok(row)
+}
+
+pub(crate) fn assemble_run_preview_at(
+    app_data_dir: &Path,
+    run_id: &str,
+) -> Result<AssembleRunPreviewResult, String> {
+    let manifest = load_run_manifest(app_data_dir, run_id)?;
+    require_preview_ready(&manifest)?;
+    let mut rows = Vec::with_capacity(state_definitions().len());
+    for state in state_definitions() {
+        let row = read_png(
+            &run_dir(app_data_dir, run_id)?.join(format!("rows/{}.png", state.key)),
+            &format!("{} row", state.key),
+        )?;
+        validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT)?;
+        rows.push(row);
+    }
+    let preview = assemble_preview_rows(&rows)?;
+    Ok(AssembleRunPreviewResult {
+        run_id: run_id.to_string(),
+        data_url: image_to_data_url(&preview)?,
+        frame_w: FRAME_W,
+        frame_h: FRAME_H,
+        frame_count: DEFAULT_FRAME_COUNT,
+        row_gap: 0,
+    })
 }
 
 #[tauri::command]
@@ -222,49 +406,16 @@ pub async fn generate_base_preview(
         local_sd_url,
         denoising_strength,
     );
-    let generated_bytes = match generate_base(&config, &prompt).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(mark_command_failed(
-                &data_dir,
-                &run_id,
-                "base",
-                &error,
-                image_api_key.as_deref(),
-            ));
-        }
-    };
-    let base = match normalize_base_image(&generated_bytes, &selected_key) {
-        Ok(base) => base,
-        Err(error) => {
-            return Err(mark_command_failed(
-                &data_dir,
-                &run_id,
-                "base",
-                &error,
-                image_api_key.as_deref(),
-            ));
-        }
-    };
-    let base_path = run_dir(&data_dir, &run_id)?.join("base.png");
-    if let Err(error) = write_png(&base_path, &base) {
-        return Err(mark_command_failed(
-            &data_dir,
-            &run_id,
-            "base",
-            &error,
-            image_api_key.as_deref(),
-        ));
-    }
-    complete_base(&data_dir, &run_id)?;
+    let base = finish_base_result_at(
+        &data_dir,
+        &run_id,
+        &selected_key,
+        generate_base(&config, &prompt).await,
+        image_api_key.as_deref(),
+    )?;
     emit_progress(
         &app,
-        serde_json::json!({
-            "runId": run_id,
-            "phase": "base",
-            "current": 1,
-            "total": 1,
-        }),
+        generation_progress_payload(&run_id, "base", None, 1, 1),
     )?;
 
     Ok(BasePreviewResult {
@@ -293,7 +444,7 @@ pub async fn generate_state_row(
         return Err("generation run provider cannot be changed during a retry".to_string());
     }
     require_base_complete(&manifest)?;
-    let selected_key = chroma_key_from_hex(&manifest.chroma_key)?;
+    let selected_key = chroma_key_for_manifest(&manifest)?;
     let base_path = run_dir(&data_dir, &run_id)?.join("base.png");
     let base = read_png(&base_path, "canonical base image")?;
     if base.dimensions() != (FRAME_W, FRAME_H) {
@@ -316,59 +467,17 @@ pub async fn generate_state_row(
         local_sd_url,
         denoising_strength,
     );
-    let generated_bytes = match generate_row(&config, &prompt, &base_data_url).await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(mark_command_failed(
-                &data_dir,
-                &run_id,
-                &state,
-                &error,
-                image_api_key.as_deref(),
-            ));
-        }
-    };
-    let row = match normalize_horizontal_row(&generated_bytes, &selected_key) {
-        Ok(row) => row,
-        Err(error) => {
-            return Err(mark_command_failed(
-                &data_dir,
-                &run_id,
-                &state,
-                &error,
-                image_api_key.as_deref(),
-            ));
-        }
-    };
-    if let Err(error) = validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT) {
-        return Err(mark_command_failed(
-            &data_dir,
-            &run_id,
-            &state,
-            &error,
-            image_api_key.as_deref(),
-        ));
-    }
-    let row_path = run_dir(&data_dir, &run_id)?.join(format!("rows/{state}.png"));
-    if let Err(error) = write_png(&row_path, &row) {
-        return Err(mark_command_failed(
-            &data_dir,
-            &run_id,
-            &state,
-            &error,
-            image_api_key.as_deref(),
-        ));
-    }
-    complete_state(&data_dir, &run_id, &state)?;
+    let row = finish_state_result_at(
+        &data_dir,
+        &run_id,
+        &state,
+        &selected_key,
+        generate_row(&config, &prompt, &base_data_url).await,
+        image_api_key.as_deref(),
+    )?;
     emit_progress(
         &app,
-        serde_json::json!({
-            "runId": run_id,
-            "phase": "state",
-            "state": state,
-            "current": 1,
-            "total": 1,
-        }),
+        generation_progress_payload(&run_id, "state", Some(&state), 1, 1),
     )?;
 
     Ok(StateRowResult {
@@ -387,26 +496,7 @@ pub fn assemble_run_preview(
     run_id: String,
 ) -> Result<AssembleRunPreviewResult, String> {
     let data_dir = app_data_dir(&app)?;
-    let manifest = load_run_manifest(&data_dir, &run_id)?;
-    require_preview_ready(&manifest)?;
-    let mut rows = Vec::with_capacity(state_definitions().len());
-    for state in state_definitions() {
-        let row = read_png(
-            &run_dir(&data_dir, &run_id)?.join(format!("rows/{}.png", state.key)),
-            &format!("{} row", state.key),
-        )?;
-        validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT)?;
-        rows.push(row);
-    }
-    let preview = assemble_preview_rows(&rows)?;
-    Ok(AssembleRunPreviewResult {
-        run_id,
-        data_url: image_to_data_url(&preview)?,
-        frame_w: FRAME_W,
-        frame_h: FRAME_H,
-        frame_count: DEFAULT_FRAME_COUNT,
-        row_gap: 0,
-    })
+    assemble_run_preview_at(&data_dir, &run_id)
 }
 
 #[tauri::command]
@@ -424,16 +514,10 @@ fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("base64 decode error: {error}"))
 }
 
-fn save_sprite_sheet_png(
-    pets_dir: &Path,
-    pet_id: &str,
-    state: &str,
-    sheet: &RgbaImage,
-) -> Result<(), String> {
-    let dir = pets_dir.join(pet_id);
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+fn save_sprite_sheet_png(pet_dir: &Path, state: &str, sheet: &RgbaImage) -> Result<(), String> {
+    std::fs::create_dir_all(pet_dir).map_err(|error| error.to_string())?;
     sheet
-        .save(dir.join(format!("{state}.png")))
+        .save(pet_dir.join(format!("{state}.png")))
         .map_err(|error| error.to_string())
 }
 
@@ -453,11 +537,11 @@ pub async fn save_combined_sprite_sheet(
     let bytes = decode_data_url(&data_url)?;
     let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
     let rgba = image.to_rgba8();
-    let pets_dir = app
+    let data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("pets");
+        .map_err(|error| error.to_string())?;
+    let pet_dir = pet_dir_at(&data_dir, &pet_id)?;
     let rows: [(&str, u32, u32); 4] = [
         ("idle", idle_frames, 150),
         ("walking", walking_frames, 100),
@@ -477,7 +561,7 @@ pub async fn save_combined_sprite_sheet(
             return Err(format!("image width is insufficient for {state} row"));
         }
         let row_sheet = imageops::crop_imm(&rgba, 0, y_start, row_width, frame_h).to_image();
-        save_sprite_sheet_png(&pets_dir, &pet_id, state, &row_sheet)?;
+        save_sprite_sheet_png(&pet_dir, state, &row_sheet)?;
         result.insert(
             state.to_string(),
             SpriteStateInfo {
@@ -516,11 +600,11 @@ pub async fn save_frame_selections(
     let bytes = decode_data_url(&data_url)?;
     let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
     let rgba = image.to_rgba8();
-    let pets_dir = app
+    let data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("pets");
+        .map_err(|error| error.to_string())?;
+    let pet_dir = pet_dir_at(&data_dir, &pet_id)?;
     let state_entries: [(&str, &Vec<FrameCell>, u32); 4] = [
         ("idle", &idle_cells, 150),
         ("walking", &walking_cells, 100),
@@ -565,7 +649,7 @@ pub async fn save_frame_selections(
             let frame = imageops::crop_imm(&rgba, src_x, src_y, frame_w, frame_h).to_image();
             imageops::replace(&mut sheet, &frame, index as i64 * frame_w as i64, 0);
         }
-        save_sprite_sheet_png(&pets_dir, &pet_id, state, &sheet)?;
+        save_sprite_sheet_png(&pet_dir, state, &sheet)?;
         result.insert(
             state.to_string(),
             SpriteStateInfo {
@@ -584,12 +668,40 @@ pub async fn save_frame_selections(
 #[cfg(test)]
 mod command_tests {
     use super::run::create_run_at;
+    use super::run_dir;
+    use super::sprite::CHROMA_KEY_CANDIDATES;
     use super::types::{state_definitions, ArtifactStatus, GenerationRunManifest};
     use super::{
-        assemble_preview_rows, require_base_complete, require_preview_ready, validate_state_name,
+        assemble_preview_rows, assemble_run_preview_at, chroma_key_for_manifest,
+        finish_base_result_at, finish_state_result_at, generation_progress_payload,
+        require_base_complete, require_preview_ready, validate_state_name,
     };
-    use image::{Rgba, RgbaImage};
+    use base64::Engine as _;
+    use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
+    use std::fs;
+    use std::io::Cursor;
     use tempfile::TempDir;
+
+    fn png_bytes(image: &RgbaImage) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image.clone())
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn opaque_row(color: [u8; 4]) -> RgbaImage {
+        RgbaImage::from_pixel(1024, 128, Rgba(color))
+    }
+
+    fn keyed_row(key: super::sprite::ChromaKey) -> RgbaImage {
+        let mut row =
+            RgbaImage::from_pixel(1024, 128, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+        for frame in 0..8u32 {
+            row.put_pixel(frame * 128 + 16, 16, Rgba([20, 30, 40, 255]));
+        }
+        row
+    }
 
     fn test_manifest() -> (TempDir, GenerationRunManifest) {
         let temp = TempDir::new().unwrap();
@@ -643,5 +755,133 @@ mod command_tests {
         assert_eq!(preview.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(preview.get_pixel(0, 128).0, [0, 255, 0, 255]);
         assert_eq!(preview.get_pixel(0, 384).0, [255, 255, 0, 255]);
+    }
+
+    #[test]
+    fn base_provider_failure_marks_only_base_failed_with_bounded_error_and_no_pets() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        super::mark_base_generating(temp.path(), "run-1").unwrap();
+        let provider_error = format!("{}secret-key", "provider failure ".repeat(80));
+
+        let error = finish_base_result_at(
+            temp.path(),
+            "run-1",
+            &CHROMA_KEY_CANDIDATES[0],
+            Err(provider_error),
+            Some("secret-key"),
+        )
+        .unwrap_err();
+
+        let manifest = super::load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.base.status, ArtifactStatus::Failed);
+        assert!(manifest.base.error.as_ref().unwrap().len() <= 512);
+        assert!(!error.contains("secret-key"));
+        assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn row_provider_failure_marks_only_requested_state_and_keeps_completed_rows() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        super::mark_base_generating(temp.path(), "run-1").unwrap();
+        super::mark_base_complete(temp.path(), "run-1").unwrap();
+        super::mark_state_generating(temp.path(), "run-1", "idle").unwrap();
+        super::mark_state_complete(temp.path(), "run-1", "idle").unwrap();
+        super::mark_state_generating(temp.path(), "run-1", "walking").unwrap();
+
+        finish_state_result_at(
+            temp.path(),
+            "run-1",
+            "walking",
+            &CHROMA_KEY_CANDIDATES[0],
+            Err("walking provider failed".to_string()),
+            None,
+        )
+        .unwrap_err();
+
+        let manifest = super::load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.states["idle"].status, ArtifactStatus::Complete);
+        assert_eq!(manifest.states["walking"].status, ArtifactStatus::Failed);
+        assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn row_processing_uses_manifest_chroma_key_and_writes_only_the_run_row() {
+        let temp = TempDir::new().unwrap();
+        let mut manifest = create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        manifest.chroma_key = "#00FFFF".to_string();
+        super::save_manifest(temp.path(), &manifest).unwrap();
+        super::mark_base_generating(temp.path(), "run-1").unwrap();
+        super::mark_base_complete(temp.path(), "run-1").unwrap();
+        super::mark_state_generating(temp.path(), "run-1", "idle").unwrap();
+        let selected_key =
+            chroma_key_for_manifest(&super::load_manifest(temp.path(), "run-1").unwrap()).unwrap();
+
+        let row = finish_state_result_at(
+            temp.path(),
+            "run-1",
+            "idle",
+            &selected_key,
+            Ok(png_bytes(&keyed_row(selected_key))),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(row.dimensions(), (1024, 128));
+        assert_eq!(row.get_pixel(0, 0)[3], 0);
+        assert_eq!(row.get_pixel(16, 16)[3], 255);
+        assert!(run_dir(temp.path(), "run-1")
+            .unwrap()
+            .join("rows/idle.png")
+            .exists());
+        assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn assembly_at_loads_four_complete_rows_without_creating_pets() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        super::mark_base_generating(temp.path(), "run-1").unwrap();
+        super::mark_base_complete(temp.path(), "run-1").unwrap();
+        for (index, state) in state_definitions().iter().enumerate() {
+            super::mark_state_generating(temp.path(), "run-1", state.key).unwrap();
+            fs::write(
+                run_dir(temp.path(), "run-1")
+                    .unwrap()
+                    .join(format!("rows/{}.png", state.key)),
+                png_bytes(&opaque_row([index as u8 + 1, 2, 3, 255])),
+            )
+            .unwrap();
+            super::mark_state_complete(temp.path(), "run-1", state.key).unwrap();
+        }
+
+        let preview = assemble_run_preview_at(temp.path(), "run-1").unwrap();
+        let encoded = preview
+            .data_url
+            .strip_prefix("data:image/png;base64,")
+            .unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+
+        assert_eq!(preview.frame_w, 128);
+        assert_eq!(preview.frame_h, 128);
+        assert_eq!(preview.frame_count, 8);
+        assert_eq!(preview.row_gap, 0);
+        assert_eq!(image.dimensions(), (1024, 512));
+        assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn progress_payload_contains_run_phase_state_and_counters() {
+        let payload = generation_progress_payload("run-1", "state", Some("walking"), 1, 1);
+
+        assert_eq!(payload["runId"], "run-1");
+        assert_eq!(payload["phase"], "state");
+        assert_eq!(payload["state"], "walking");
+        assert_eq!(payload["current"], 1);
+        assert_eq!(payload["total"], 1);
     }
 }
