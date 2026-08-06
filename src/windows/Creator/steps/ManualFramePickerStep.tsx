@@ -1,8 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { PetState, SpriteStateInfo } from '../../../types/pet';
+import {
+  PET_STATE_CATALOG,
+  PET_STATES,
+  type PetState,
+  type SpriteStateInfo,
+} from '../../../types/pet';
 
-type ActionKey = 'idle' | 'walking' | 'waving' | 'working';
+type ActionKey = PetState;
 
 interface Cell {
   col: number;
@@ -21,6 +26,7 @@ interface Props {
     frameH?: number;
     colGap?: number;
     rowGap?: number;
+    layout?: 'horizontalRows' | 'grid';
     idleFrames?: number;
     walkingFrames?: number;
     wavingFrames?: number;
@@ -28,14 +34,24 @@ interface Props {
   };
 }
 
-const ACTION_META: { key: ActionKey; label: string; color: string }[] = [
-  { key: 'idle',    label: '待机',  color: '#4f8ef7' },
-  { key: 'walking', label: '走路',  color: '#48bb78' },
-  { key: 'waving',  label: '挥手',  color: '#ed8936' },
-  { key: 'working', label: '工作',  color: '#e53e3e' },
-];
+const ACTION_COLORS: Record<PetState, string> = {
+  idle: '#4f8ef7',
+  walking: '#48bb78',
+  waving: '#ed8936',
+  working: '#e53e3e',
+};
 
-const EMPTY_SELECTIONS: Selections = { idle: [], walking: [], waving: [], working: [] };
+const ACTION_META = PET_STATE_CATALOG.map((definition) => ({
+  ...definition,
+  color: ACTION_COLORS[definition.key],
+}));
+
+function createEmptySelections(): Selections {
+  return PET_STATES.reduce((result, state) => {
+    result[state] = [];
+    return result;
+  }, {} as Selections);
+}
 
 function cellKey(cell: Cell): string {
   return `${cell.col},${cell.row}`;
@@ -56,9 +72,10 @@ export default function ManualFramePickerStep({
   const [loadedImg, setLoadedImg]   = useState<HTMLImageElement | null>(null);
   const [frameW, setFrameW]         = useState<number>(initialConfig?.frameW ?? 128);
   const [frameH, setFrameH]         = useState<number>(initialConfig?.frameH ?? 128);
-  const [colGap, setColGap]         = useState<number>(initialConfig?.colGap ?? 0);
-  const [rowGap, setRowGap]         = useState<number>(initialConfig?.rowGap ?? 0);
-  const [selections, setSelections] = useState<Selections>(EMPTY_SELECTIONS);
+  const initialLayout = initialConfig?.layout ?? (initialConfig ? 'horizontalRows' : 'grid');
+  const [colGap, setColGap]         = useState<number>(initialLayout === 'horizontalRows' ? 0 : initialConfig?.colGap ?? 0);
+  const [rowGap, setRowGap]         = useState<number>(initialLayout === 'horizontalRows' ? 0 : initialConfig?.rowGap ?? 0);
+  const [selections, setSelections] = useState<Selections>(createEmptySelections);
   const [activeAction, setActiveAction] = useState<ActionKey>('idle');
   const [saving, setSaving]         = useState(false);
   const [error, setError]           = useState<string | null>(null);
@@ -73,28 +90,41 @@ export default function ManualFramePickerStep({
     img.src = initialDataUrl;
   }, [initialDataUrl]);
 
-  // Auto-fill selections from initialConfig frame counts once image loads.
+  // Apply generated layout settings and auto-fill its four state rows.
   useEffect(() => {
-    if (!loadedImg || !initialConfig) return;
-    const { idleFrames, walkingFrames, wavingFrames, workingFrames } = initialConfig;
-    if (!idleFrames && !walkingFrames && !wavingFrames && !workingFrames) return;
+    if (!initialConfig) return;
 
-    function makeCells(count: number, row: number): Cell[] {
-      const cells: Cell[] = [];
-      for (let col = 0; col < (count ?? 0); col++) {
-        cells.push({ col, row });
-      }
-      return cells;
-    }
+    const layout = initialConfig.layout ?? 'horizontalRows';
+    setFrameW(initialConfig.frameW ?? 128);
+    setFrameH(initialConfig.frameH ?? 128);
+    setColGap(layout === 'horizontalRows' ? 0 : initialConfig.colGap ?? 0);
+    setRowGap(layout === 'horizontalRows' ? 0 : initialConfig.rowGap ?? 0);
 
-    setSelections({
-      idle:    makeCells(idleFrames    ?? 0, 0),
-      walking: makeCells(walkingFrames ?? 0, 1),
-      waving:  makeCells(wavingFrames  ?? 0, 2),
-      working: makeCells(workingFrames ?? 0, 3),
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedImg]);
+    if (!loadedImg) return;
+
+    const frameCounts: Record<PetState, number> = {
+      idle: initialConfig.idleFrames ?? 0,
+      walking: initialConfig.walkingFrames ?? 0,
+      waving: initialConfig.wavingFrames ?? 0,
+      working: initialConfig.workingFrames ?? 0,
+    };
+
+    setSelections(PET_STATES.reduce((result, state, row) => {
+      result[state] = Array.from({ length: frameCounts[state] }, (_, col) => ({ col, row }));
+      return result;
+    }, createEmptySelections()));
+  }, [
+    loadedImg,
+    initialConfig?.layout,
+    initialConfig?.frameW,
+    initialConfig?.frameH,
+    initialConfig?.colGap,
+    initialConfig?.rowGap,
+    initialConfig?.idleFrames,
+    initialConfig?.walkingFrames,
+    initialConfig?.wavingFrames,
+    initialConfig?.workingFrames,
+  ]);
 
   // Redraw canvas whenever relevant state changes.
   useEffect(() => {

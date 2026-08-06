@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import { appDataDir, join } from '@tauri-apps/api/path';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { PET_STATE_CATALOG, PET_STATES } from '../../../types/pet';
 
 interface PreviewStepProps {
   petId: string;
   onNext: () => void;
   onBack: () => void;
 }
-
-const STATES = ['idle', 'walking', 'waving', 'working'] as const;
 
 export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps) {
   const [sheetSrcs, setSheetSrcs] = useState<Record<string, string>>({});
@@ -17,7 +16,7 @@ export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps)
     async function loadPaths() {
       const appDir = await appDataDir();
       const srcs: Record<string, string> = {};
-      for (const state of STATES) {
+      for (const state of PET_STATES) {
         const absPath = await join(appDir, 'pets', petId, `${state}.png`);
         srcs[state] = convertFileSrc(absPath);
       }
@@ -33,7 +32,9 @@ export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps)
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
-        {STATES.map((state) => (
+        {PET_STATES.map((state) => {
+          const definition = PET_STATE_CATALOG.find((item) => item.key === state);
+          return (
           <div key={state} style={{ textAlign: 'center' }}>
             <div style={{
               background: '#f7fafc', borderRadius: 8, padding: 8,
@@ -51,10 +52,11 @@ export default function PreviewStep({ petId, onNext, onBack }: PreviewStepProps)
               )}
             </div>
             <p style={{ margin: '6px 0 0', fontSize: 12, color: '#4a5568' }}>
-              {{ idle: '待机', walking: '行走', waving: '招手', working: '工作' }[state]}
+              {definition?.label ?? state}
             </p>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>

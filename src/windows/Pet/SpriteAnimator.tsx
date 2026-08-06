@@ -32,14 +32,20 @@ export default function SpriteAnimator({ sheetSrc, meta, displayW, displayH }: S
     cancelAnimationFrame(rafRef.current);
 
     const img = new Image();
+    const drawFrame = (frameIndex: number) => {
+      const col = frameIndex % cols;
+      const row = Math.floor(frameIndex / cols);
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, col * frameW, row * frameH, frameW, frameH, 0, 0, w, h);
+    };
 
     img.onload = () => {
+      drawFrame(0);
+      frameRef.current = frameCount > 1 ? 1 : 0;
+
       function tick(ts: number) {
         if (ts - lastTsRef.current >= delayMs) {
-          const col = frameRef.current % cols;
-          const row = Math.floor(frameRef.current / cols);
-          ctx.clearRect(0, 0, w, h);
-          ctx.drawImage(img, col * frameW, row * frameH, frameW, frameH, 0, 0, w, h);
+          drawFrame(frameRef.current);
           frameRef.current = (frameRef.current + 1) % frameCount;
           lastTsRef.current = ts;
         }

@@ -1,12 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { PET_STATE_CATALOG, PET_STATES } from '../../../../types/pet';
+
+const { mockAppDataDir, mockJoin, mockConvertFileSrc } = vi.hoisted(() => ({
+  mockAppDataDir: vi.fn().mockResolvedValue('C:\\AppData\\Roaming\\desktop-pet'),
+  mockJoin: vi.fn((...parts: string[]) => Promise.resolve(parts.join('/'))),
+  mockConvertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
+}));
 
 vi.mock('@tauri-apps/api/path', () => ({
-  appDataDir: vi.fn().mockResolvedValue('C:\\AppData\\Roaming\\desktop-pet'),
-  join: vi.fn((...parts: string[]) => Promise.resolve(parts.join('/'))),
+  appDataDir: mockAppDataDir,
+  join: mockJoin,
 }));
 vi.mock('@tauri-apps/api/core', () => ({
-  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path}`),
+  convertFileSrc: mockConvertFileSrc,
 }));
 
 import PreviewStep from '../PreviewStep';
@@ -18,15 +25,22 @@ describe('PreviewStep', () => {
     onBack: vi.fn(),
   };
 
-  it('renders four state labels', async () => {
+  it('renders catalog labels in PET_STATES order and loads each state path', async () => {
     const { findByText } = render(<PreviewStep {...defaultProps} />);
-    expect(await findByText('待机')).toBeTruthy();
-    expect(await findByText('行走')).toBeTruthy();
-    expect(await findByText('招手')).toBeTruthy();
-    expect(await findByText('工作')).toBeTruthy();
+    for (const state of PET_STATES) {
+      const label = PET_STATE_CATALOG.find((definition) => definition.key === state)!.label;
+      expect(await findByText(label)).toBeTruthy();
+    }
+    expect(mockAppDataDir).toHaveBeenCalled();
+    expect(mockJoin.mock.calls.map((call) => call[3])).toEqual(
+      PET_STATES.map((state) => `${state}.png`),
+    );
+    expect(mockConvertFileSrc.mock.calls.map((call) => call[0])).toEqual(
+      PET_STATES.map((state) => `C:\\AppData\\Roaming\\desktop-pet/pets/abc-123/${state}.png`),
+    );
   });
 
-  it('renders four GIF preview images', async () => {
+  it('renders four PNG preview images', async () => {
     const { findAllByRole } = render(<PreviewStep {...defaultProps} />);
     const images = await findAllByRole('img');
     expect(images.length).toBe(4);
