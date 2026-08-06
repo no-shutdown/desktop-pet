@@ -28,8 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 urlencoding = "2.1"
 tiny_http = "0.12"
 base64 = "0.22"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["net", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
-

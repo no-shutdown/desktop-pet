@@ -1,7 +1,11 @@
 use crate::commands::generation::types::ProviderConfig;
 use base64::Engine as _;
 use serde_json::Value;
-use std::{net::IpAddr, str::FromStr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+    time::Duration,
+};
 
 const SILICONFLOW_ENDPOINT: &str = "https://api.siliconflow.cn/v1/images/generations";
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -117,6 +121,12 @@ fn validate_canonical_data_url(value: &str) -> Result<String, String> {
     if decoded.is_empty() {
         return Err("canonical Base image data URL decodes to an empty image".to_string());
     }
+    if decoded.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "canonical Base image exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
     Ok(value.to_string())
 }
 
@@ -143,6 +153,17 @@ fn is_blocked_ip(address: IpAddr) -> bool {
                 .unwrap_or(false)
         }
     }
+}
+
+fn validate_resolved_addresses(addresses: &[SocketAddr]) -> Result<SocketAddr, String> {
+    let chosen = addresses
+        .first()
+        .copied()
+        .ok_or_else(|| "SiliconFlow image URL resolved to no addresses".to_string())?;
+    if addresses.iter().any(|address| is_blocked_ip(address.ip())) {
+        return Err("SiliconFlow image URL resolved to a private or local address".to_string());
+    }
+    Ok(chosen)
 }
 
 fn validate_image_download_url(value: &str) -> Result<reqwest::Url, String> {
@@ -199,6 +220,39 @@ fn validate_image_download_url(value: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+struct ResolvedImageUrl {
+    url: reqwest::Url,
+    host: String,
+    address: SocketAddr,
+}
+
+async fn resolve_image_download_url(value: &str) -> Result<ResolvedImageUrl, String> {
+    let url = validate_image_download_url(value)?;
+    let host = url
+        .host_str()
+        .filter(|host| !host.trim().is_empty())
+        .ok_or_else(|| "SiliconFlow image URL must have a non-empty host".to_string())?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_string();
+    let port = url.port().unwrap_or(443);
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|error| {
+            bounded_sanitized_error(
+                "SiliconFlow image URL DNS lookup failed",
+                &error.to_string(),
+                None,
+            )
+        })?
+        .collect();
+    let address = validate_resolved_addresses(&addresses)?;
+
+    Ok(ResolvedImageUrl { url, host, address })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ImageSource {
     Bytes(Vec<u8>),
@@ -230,28 +284,39 @@ fn decode_image_data(value: &str, provider: &str) -> Result<Vec<u8>, String> {
     if bytes.is_empty() {
         return Err(format!("{provider}: decoded image is empty"));
     }
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "{provider}: decoded image exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
     Ok(bytes)
 }
 
-fn validate_content_length(content_length: Option<u64>) -> Result<(), String> {
+fn validate_content_length_for(content_length: Option<u64>, context: &str) -> Result<(), String> {
     match content_length {
-        Some(0) => Err("SiliconFlow image response body is empty".to_string()),
+        Some(0) => Err(format!("{context} body is empty")),
         Some(length) if length > MAX_IMAGE_BYTES as u64 => Err(format!(
-            "SiliconFlow image response exceeds the {} MiB limit",
+            "{context} exceeds the {} MiB limit",
             MAX_IMAGE_BYTES / (1024 * 1024)
         )),
         _ => Ok(()),
     }
 }
 
-fn append_bounded_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+#[cfg(test)]
+fn validate_content_length(content_length: Option<u64>) -> Result<(), String> {
+    validate_content_length_for(content_length, "SiliconFlow image response")
+}
+
+fn append_bounded_chunk(body: &mut Vec<u8>, chunk: &[u8], context: &str) -> Result<(), String> {
     let next_length = body
         .len()
         .checked_add(chunk.len())
-        .ok_or_else(|| "SiliconFlow image response is too large".to_string())?;
+        .ok_or_else(|| format!("{context} is too large"))?;
     if next_length > MAX_IMAGE_BYTES {
         return Err(format!(
-            "SiliconFlow image response exceeds the {} MiB limit",
+            "{context} exceeds the {} MiB limit",
             MAX_IMAGE_BYTES / (1024 * 1024)
         ));
     }
@@ -259,16 +324,46 @@ fn append_bounded_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), St
     Ok(())
 }
 
-fn finish_image_body(body: Vec<u8>) -> Result<Vec<u8>, String> {
+#[cfg(test)]
+fn append_bounded_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+    append_bounded_chunk(body, chunk, "SiliconFlow image response")
+}
+
+fn finish_bounded_body(body: Vec<u8>, context: &str) -> Result<Vec<u8>, String> {
     if body.is_empty() {
-        return Err("SiliconFlow image response body is empty".to_string());
+        return Err(format!("{context} body is empty"));
     }
     Ok(body)
 }
 
+#[cfg(test)]
+fn finish_image_body(body: Vec<u8>) -> Result<Vec<u8>, String> {
+    finish_bounded_body(body, "SiliconFlow image response")
+}
+
+fn parse_bounded_json_body(body: &[u8], provider: &str) -> Result<Value, String> {
+    if body.is_empty() {
+        return Err(format!("{provider} response body is empty"));
+    }
+    if body.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "{provider} response exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    serde_json::from_slice(body).map_err(|error| {
+        bounded_sanitized_error(
+            &format!("{provider} response JSON is invalid"),
+            &error.to_string(),
+            None,
+        )
+    })
+}
+
 fn next_http_url_start(value: &str) -> Option<usize> {
-    let http = value.find("http://");
-    let https = value.find("https://");
+    let lower = value.to_ascii_lowercase();
+    let http = lower.find("http://");
+    let https = lower.find("https://");
     match (http, https) {
         (Some(http), Some(https)) => Some(http.min(https)),
         (Some(http), None) => Some(http),
@@ -389,6 +484,15 @@ fn build_http_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("HTTP client initialization failed: {error}"))
 }
 
+fn build_resolved_http_client(host: &str, address: SocketAddr) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, address)
+        .build()
+        .map_err(|error| format!("HTTP client initialization failed: {error}"))
+}
+
 fn validate_provider(config: &ProviderConfig) -> Result<(), String> {
     match config.provider.trim() {
         "siliconflow" => {
@@ -407,25 +511,36 @@ fn validate_provider(config: &ProviderConfig) -> Result<(), String> {
                 return Err("Local SD URL is required".to_string());
             }
         }
-        provider => return Err(format!("unsupported image provider: {provider}")),
+        provider => {
+            return Err(bounded_sanitized_error(
+                "unsupported image provider",
+                provider,
+                None,
+            ))
+        }
     }
 
     Ok(())
 }
 
-async fn read_bounded_image_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
-    validate_content_length(response.content_length())?;
+async fn read_bounded_response_body(
+    mut response: reqwest::Response,
+    context: &str,
+) -> Result<Vec<u8>, String> {
+    validate_content_length_for(response.content_length(), context)?;
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        bounded_sanitized_error(
-            "SiliconFlow image download failed",
-            &error.to_string(),
-            None,
-        )
-    })? {
-        append_bounded_image_chunk(&mut body, &chunk)?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| bounded_sanitized_error(context, &error.to_string(), None))?
+    {
+        append_bounded_chunk(&mut body, &chunk, context)?;
     }
-    finish_image_body(body)
+    finish_bounded_body(body, context)
+}
+
+async fn read_bounded_image_body(response: reqwest::Response) -> Result<Vec<u8>, String> {
+    read_bounded_response_body(response, "SiliconFlow image response").await
 }
 
 async fn read_bounded_error_detail(mut response: reqwest::Response) -> String {
@@ -467,19 +582,21 @@ async fn parse_json_response(
         ));
     }
 
-    response.json::<Value>().await.map_err(|error| {
+    let body = read_bounded_response_body(response, &format!("{provider} response")).await?;
+    parse_bounded_json_body(&body, provider).map_err(|error| {
         bounded_sanitized_error(
             &format!("{provider} response JSON decode failed"),
-            &error.to_string(),
+            &error,
             secret,
         )
     })
 }
 
-async fn download_image(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let url = validate_image_download_url(url)?;
+async fn download_image(url: &str) -> Result<Vec<u8>, String> {
+    let resolved = resolve_image_download_url(url).await?;
+    let client = build_resolved_http_client(&resolved.host, resolved.address)?;
 
-    let response = client.get(url).send().await.map_err(|error| {
+    let response = client.get(resolved.url).send().await.map_err(|error| {
         bounded_sanitized_error(
             "SiliconFlow image download failed",
             &error.to_string(),
@@ -519,7 +636,7 @@ async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Ve
 
     match siliconflow_image_source(&response)? {
         ImageSource::Bytes(bytes) => Ok(bytes),
-        ImageSource::Url(url) => download_image(&client, &url).await,
+        ImageSource::Url(url) => download_image(&url).await,
     }
 }
 
@@ -559,7 +676,11 @@ pub async fn generate_base(config: &ProviderConfig, prompt: &str) -> Result<Vec<
                 let body = local_sd_base_body(prompt, 256, 256);
                 generate_local_sd(local_sd_endpoint(&config.local_sd_url, "txt2img"), body).await
             }
-            provider => Err(format!("unsupported image provider: {provider}")),
+            provider => Err(bounded_sanitized_error(
+                "unsupported image provider",
+                provider,
+                None,
+            )),
         }
     })
     .await
@@ -590,7 +711,11 @@ pub async fn generate_row(
                     local_sd_row_body(prompt, &base_data_url, 2048, 256, config.denoising_strength);
                 generate_local_sd(local_sd_endpoint(&config.local_sd_url, "img2img"), body).await
             }
-            provider => Err(format!("unsupported image provider: {provider}")),
+            provider => Err(bounded_sanitized_error(
+                "unsupported image provider",
+                provider,
+                None,
+            )),
         }
     })
     .await
@@ -601,6 +726,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::future::Future;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -850,13 +976,13 @@ mod tests {
     #[test]
     fn provider_error_details_are_url_redacted_and_byte_bounded() {
         let detail = format!(
-            "provider failed: https://cdn.example/image.png?X-Amz-Signature={}",
+            "provider failed: HTTPS://cdn.example/image.png?X-Amz-Signature={}",
             "secret".repeat(2000)
         );
         let sanitized = sanitize_provider_error_detail(&detail);
 
         assert!(sanitized.len() <= MAX_ERROR_DETAIL_BYTES);
-        assert!(!sanitized.contains("https://"));
+        assert!(!sanitized.contains("HTTPS://"));
         assert!(!sanitized.contains("X-Amz-Signature"));
         assert!(!sanitized.contains("secret"));
     }
@@ -873,6 +999,60 @@ mod tests {
         assert!(!message.contains("signed-value"));
         assert!(!message.contains("api-key"));
         assert!(message.len() <= MAX_ERROR_DETAIL_BYTES);
+    }
+
+    #[test]
+    fn successful_json_and_decoded_images_are_size_bounded() {
+        assert!(parse_bounded_json_body(b"", "SiliconFlow").is_err());
+        assert!(parse_bounded_json_body(&vec![b' '; MAX_IMAGE_BYTES + 1], "SiliconFlow").is_err());
+        assert!(parse_bounded_json_body(br#"{"images": []}"#, "SiliconFlow").is_ok());
+
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(vec![0_u8; MAX_IMAGE_BYTES + 1]);
+        assert!(decode_image_data(&encoded, "SiliconFlow").is_err());
+        assert!(validate_canonical_data_url(&format!("data:image/png;base64,{encoded}")).is_err());
+        assert!(decode_local_sd_response(&json!({ "images": [encoded] })).is_err());
+    }
+
+    #[test]
+    fn resolved_private_addresses_are_rejected_before_download() {
+        let safe = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
+        assert_eq!(validate_resolved_addresses(&[safe]).unwrap(), safe);
+
+        for unsafe_address in [
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 443),
+            SocketAddr::new(Ipv4Addr::BROADCAST.into(), 443),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 443),
+            SocketAddr::new(IpAddr::V6("fc00::1".parse().unwrap()), 443),
+        ] {
+            assert!(
+                validate_resolved_addresses(&[unsafe_address]).is_err(),
+                "expected address to be rejected: {unsafe_address}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_provider_names_are_bounded_and_sanitized() {
+        let provider = format!("HTTPS://signed.example/?token={}", "secret".repeat(2000));
+        let config = ProviderConfig {
+            provider,
+            api_key: None,
+            base_model: "base".to_string(),
+            reference_model: "reference".to_string(),
+            local_sd_url: String::new(),
+            denoising_strength: 0.55,
+        };
+
+        let error = poll_error(generate_base(&config, "prompt"));
+        assert!(error.starts_with("unsupported image provider:"));
+        assert!(error.len() <= MAX_ERROR_DETAIL_BYTES);
+        assert!(!error.contains("HTTPS://"));
+        assert!(!error.contains("secret"));
     }
 
     #[test]
