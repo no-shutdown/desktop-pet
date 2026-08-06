@@ -11,6 +11,7 @@ const SILICONFLOW_ENDPOINT: &str = "https://api.siliconflow.cn/v1/images/generat
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 const REQUEST_TIMEOUT: Duration = OPERATION_TIMEOUT;
 const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ENCODED_IMAGE_BYTES: usize = ((MAX_IMAGE_BYTES + 2) / 3) * 4;
 const MAX_ERROR_DETAIL_BYTES: usize = 512;
 const LOCAL_SD_NEGATIVE_PROMPT: &str = "ugly, blurry, watermark, multiple characters";
 const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
@@ -89,6 +90,16 @@ fn is_valid_image_subtype(value: &str) -> bool {
         })
 }
 
+fn validate_encoded_payload_length(payload: &str, context: &str) -> Result<(), String> {
+    if payload.len() > MAX_ENCODED_IMAGE_BYTES {
+        return Err(format!(
+            "{context} encoded payload exceeds the {} MiB limit",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
 fn canonical_data_url_payload(value: &str) -> Result<&str, String> {
     let value = value.trim();
     let (metadata, payload) = value
@@ -109,6 +120,7 @@ fn canonical_data_url_payload(value: &str) -> Result<&str, String> {
     if payload.is_empty() {
         return Err("canonical Base image data URL has an empty payload".to_string());
     }
+    validate_encoded_payload_length(payload, "canonical Base image")?;
     Ok(payload)
 }
 
@@ -277,6 +289,7 @@ fn decode_image_data(value: &str, provider: &str) -> Result<Vec<u8>, String> {
     if encoded.is_empty() {
         return Err(format!("{provider}: image base64 is empty"));
     }
+    validate_encoded_payload_length(encoded, provider)?;
 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -488,6 +501,7 @@ fn build_resolved_http_client(host: &str, address: SocketAddr) -> Result<reqwest
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .resolve(host, address)
         .build()
         .map_err(|error| format!("HTTP client initialization failed: {error}"))
@@ -546,18 +560,21 @@ async fn read_bounded_image_body(response: reqwest::Response) -> Result<Vec<u8>,
 async fn read_bounded_error_detail(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
     let mut truncated = false;
-    while let Ok(Some(chunk)) = response.chunk().await {
-        let remaining = MAX_ERROR_DETAIL_BYTES.saturating_sub(body.len());
-        if remaining == 0 {
-            truncated = true;
+    while body.len() < MAX_ERROR_DETAIL_BYTES {
+        let Ok(Some(chunk)) = response.chunk().await else {
             break;
-        }
+        };
+        let remaining = MAX_ERROR_DETAIL_BYTES - body.len();
         if chunk.len() > remaining {
             body.extend_from_slice(&chunk[..remaining]);
             truncated = true;
             break;
         }
         body.extend_from_slice(&chunk);
+        if body.len() == MAX_ERROR_DETAIL_BYTES {
+            truncated = true;
+            break;
+        }
     }
 
     let mut detail = String::from_utf8_lossy(&body).into_owned();
@@ -1012,6 +1029,17 @@ mod tests {
         assert!(decode_image_data(&encoded, "SiliconFlow").is_err());
         assert!(validate_canonical_data_url(&format!("data:image/png;base64,{encoded}")).is_err());
         assert!(decode_local_sd_response(&json!({ "images": [encoded] })).is_err());
+    }
+
+    #[test]
+    fn oversized_encoded_image_payload_is_rejected_before_decode() {
+        let oversized = "A".repeat(MAX_ENCODED_IMAGE_BYTES + 1);
+        let raw_error = decode_image_data(&oversized, "SiliconFlow").unwrap_err();
+        assert!(raw_error.contains("encoded payload"));
+
+        let data_url = format!("data:image/png;base64,{oversized}");
+        let canonical_error = validate_canonical_data_url(&data_url).unwrap_err();
+        assert!(canonical_error.contains("encoded payload"));
     }
 
     #[test]
