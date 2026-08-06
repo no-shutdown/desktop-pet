@@ -6,70 +6,50 @@ pub const FRAME_COUNTS: &[(&str, usize)] = &[
     ("idle",    8),
     ("walking", 8),
     ("waving",  8),
-    ("working", 6),
+    ("working", 8),
 ];
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratePreviewResult {
+    pub data_url: String,
+    pub pet_id: String,
+    pub frame_w: u32,
+    pub frame_h: u32,
+    pub idle_frames: u32,
+    pub walking_frames: u32,
+    pub waving_frames: u32,
+    pub working_frames: u32,
+}
 
 pub const TOTAL_STATES: usize = FRAME_COUNTS.len();
 
+// Stored cell size per frame in the sprite sheet PNG.
 const CELL_SIZE: u32 = 128;
+// Generation size per cell — fetched at 2× then downsampled for quality.
+const API_CELL_SIZE: u32 = 256;
 
-fn state_action_prompt(state: &str) -> &str {
-    match state {
-        "idle"    => "standing still, relaxed natural pose, slight smile, subtle breathing motion",
-        "walking" => "walking cycle, legs alternating steps, arms swinging naturally at sides",
-        "waving"  => "waving hand high with cheerful big smile, arm raised above head",
-        "working" => "focused working pose, leaning forward slightly, thinking or typing expression",
-        _         => "neutral pose",
-    }
-}
-
-fn frame_phase(state: &str, frame_idx: usize) -> &'static str {
-    const IDLE: &[&str] = &[
-        "relaxed neutral standing, arms at sides, looking forward",
-        "very slight exhale, shoulders gently settled, peaceful expression",
-        "head very slightly tilted left, arms at sides, content look",
-        "weight subtly shifting, natural breathing, soft smile",
-        "neutral stance returning, arms at sides, calm expression",
-        "gentle inhale, shoulders barely raised, serene face",
-        "head very slightly tilted right, arms relaxed, gentle smile",
-        "fully upright neutral, grounded stance, soft forward gaze",
-    ];
-    const WALKING: &[&str] = &[
-        "left foot stepping forward, right arm swinging forward, striding",
-        "feet close mid-stride, arms passing center, weight shifting",
-        "right foot stepping forward, left arm swinging forward, in motion",
-        "feet close mid-stride, arms at sides, transferring weight",
-        "left foot forward again, right arm forward, confident step",
-        "mid-stride bounce, arms in motion, energetic walk",
-        "right foot stepping forward, left arm swinging, natural gait",
-        "mid-stride transition, arms settling, smooth walking rhythm",
-    ];
-    const WAVING: &[&str] = &[
-        "right arm raised, hand tilted to the left, big cheerful smile",
-        "right arm raised high, hand at top center, bright happy expression",
-        "right arm raised, hand tilted to the right, joyful waving",
-        "right arm raised, hand centered at peak, enthusiastic smile",
-        "arm raised, hand sweeping left, beaming grin",
-        "arm raised high, hand at center, delighted expression",
-        "arm raised, hand sweeping right, warm cheerful wave",
-        "arm at full height, hand centered, very happy expression",
-    ];
-    const WORKING: &[&str] = &[
-        "leaning slightly forward, fingers near keyboard, focused expression",
-        "typing intently, fingers on keys, very concentrated look",
-        "pausing to think, hand near chin, thoughtful gaze at screen",
-        "slight nod of understanding, pen near chin, pondering",
-        "typing quickly, leaning in, determined focused expression",
-        "leaning back slightly, reviewing work, satisfied thoughtful look",
-    ];
-
-    match state {
-        "idle"    => IDLE[frame_idx % IDLE.len()],
-        "walking" => WALKING[frame_idx % WALKING.len()],
-        "waving"  => WAVING[frame_idx % WAVING.len()],
-        "working" => WORKING[frame_idx % WORKING.len()],
-        _         => "natural pose",
-    }
+fn state_animation_desc(state: &str, frame_count: usize, cols: usize, rows: usize) -> String {
+    let action = state;
+    let motion = match state {
+        "idle" =>
+            "standing still with gentle breathing, subtle body sway, small pose variations, relaxed resting pose loop",
+        "walking" =>
+            "walking to the right, complete walk cycle, alternating leg steps with opposite arm swing, smooth sequential gait",
+        "waving" =>
+            "waving right hand, arm raises and hand moves side to side, big cheerful smile, friendly wave motion",
+        "working" =>
+            "typing at keyboard, fingers moving on keys, slight head tilt and bob, focused expression, desk work motion",
+        _ => "animation loop",
+    };
+    format!(
+        "pixel art sprite sheet, {cols}x{rows} grid, {n} sequential frames, character {action}: {motion}, pure white background, same character design every frame",
+        cols   = cols,
+        rows   = rows,
+        n      = frame_count,
+        action = action,
+        motion = motion,
+    )
 }
 
 pub struct StateSpec {
@@ -85,30 +65,17 @@ impl StateSpec {
 }
 
 pub fn build_state_specs() -> Vec<StateSpec> {
-    FRAME_COUNTS.iter().map(|(state, count)| {
-        let cols = 2usize;
-        let rows = (count + cols - 1) / cols;
-        StateSpec { state: state.to_string(), frame_count: *count, cols, rows }
+    build_state_specs_with_count(FRAME_COUNTS[0].1)
+}
+
+pub fn build_state_specs_with_count(frame_count: usize) -> Vec<StateSpec> {
+    let cols = 4usize;
+    let rows = (frame_count + cols - 1) / cols;
+    FRAME_COUNTS.iter().map(|(state, _)| {
+        StateSpec { state: state.to_string(), frame_count, cols, rows }
     }).collect()
 }
 
-pub fn build_frame_prompt(base_prompt: &str, state: &str, frame_idx: usize) -> String {
-    let truncated = if base_prompt.len() > 300 {
-        let mut end = 300;
-        while !base_prompt.is_char_boundary(end) { end -= 1; }
-        &base_prompt[..end]
-    } else {
-        base_prompt
-    };
-    let action = state_action_prompt(state);
-    let phase = frame_phase(state, frame_idx);
-    format!(
-        "{}, {}, {}, chibi pixel art, simple flat colors, pure white background, full body character, single animation frame, centered character, square image",
-        truncated, action, phase
-    )
-}
-
-// Kept for tests / external callers that still reference the sprite-sheet prompt style.
 pub fn build_sprite_prompt(base_prompt: &str, spec: &StateSpec) -> String {
     let truncated = if base_prompt.len() > 300 {
         let mut end = 300;
@@ -117,16 +84,18 @@ pub fn build_sprite_prompt(base_prompt: &str, spec: &StateSpec) -> String {
     } else {
         base_prompt
     };
-    let action = state_action_prompt(&spec.state);
+    let anim_desc = state_animation_desc(&spec.state, spec.frame_count, spec.cols, spec.rows);
+    // Order: animation description → character description → quality tags.
+    // Animation layout info comes first so it is preserved even if URL truncates.
     format!(
-        "{}, {}, chibi pixel art, simple flat colors, pure white background, full body character, sprite sheet {}x{} grid layout, {} sequential animation frames, same consistent character in every cell",
-        truncated, action, spec.cols, spec.rows, spec.frame_count
+        "{}, {}, no text, no watermark",
+        anim_desc, truncated
     )
 }
 
 pub fn build_pollinations_url(prompt: &str, width: u32, height: u32) -> String {
-    let truncated = if prompt.len() > 450 {
-        let mut end = 450;
+    let truncated = if prompt.len() > 700 {
+        let mut end = 700;
         while !prompt.is_char_boundary(end) { end -= 1; }
         &prompt[..end]
     } else {
@@ -140,12 +109,56 @@ pub fn build_pollinations_url(prompt: &str, width: u32, height: u32) -> String {
 }
 
 pub fn apply_chroma_key(img: &mut RgbaImage, threshold: u8) {
+    let w = img.width();
+    let h = img.height();
+
+    let corner_coords = [
+        (0, 0),
+        (w.saturating_sub(1), 0),
+        (0, h.saturating_sub(1)),
+        (w.saturating_sub(1), h.saturating_sub(1)),
+    ];
+
+    // Sample corners to detect whether the background is dark or light.
+    let avg_brightness: u32 = corner_coords
+        .iter()
+        .map(|&(x, y)| {
+            let p = img.get_pixel(x, y);
+            (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3
+        })
+        .sum::<u32>()
+        / corner_coords.len() as u32;
+
+    let dark_bg = avg_brightness < 128;
+
     for pixel in img.pixels_mut() {
         let [r, g, b, _] = pixel.0;
-        if r > 255 - threshold && g > 255 - threshold && b > 255 - threshold {
+        let remove = if dark_bg {
+            r < threshold && g < threshold && b < threshold
+        } else {
+            r > 255 - threshold && g > 255 - threshold && b > 255 - threshold
+        };
+        if remove {
             pixel.0 = [0, 0, 0, 0];
         }
     }
+}
+
+/// Takes a multi-row grid image and rearranges all frames into a single horizontal row.
+/// Each frame is `frame_w × frame_h`. The source image has `cols` columns and `rows` rows.
+pub fn flatten_to_single_row(img: &RgbaImage, frame_w: u32, frame_h: u32, cols: u32, rows: u32) -> RgbaImage {
+    let total_frames = cols * rows;
+    let mut out = RgbaImage::new(frame_w * total_frames, frame_h);
+    for frame_idx in 0..total_frames {
+        let src_col = frame_idx % cols;
+        let src_row = frame_idx / cols;
+        let src_x = src_col * frame_w;
+        let src_y = src_row * frame_h;
+        let dst_x = frame_idx * frame_w;
+        let frame = imageops::crop_imm(img, src_x, src_y, frame_w, frame_h).to_image();
+        imageops::replace(&mut out, &frame, dst_x as i64, 0);
+    }
+    out
 }
 
 pub fn decode_sprite_sheet(bytes: &[u8], width: u32, height: u32) -> Result<RgbaImage, String> {
@@ -249,94 +262,176 @@ async fn fetch_image_localsd(
 #[tauri::command]
 pub async fn generate_and_assemble(
     app: tauri::AppHandle,
-    pet_id: String,
     base_prompt: String,
+    frame_count_per_state: Option<u32>,
     image_provider: Option<String>,
     image_api_key: Option<String>,
     image_model: Option<String>,
     local_sd_url: Option<String>,
-) -> Result<HashMap<String, SpriteStateInfo>, String> {
-    use tauri::Manager;
-    use tauri::Emitter;
+) -> Result<GeneratePreviewResult, String> {
+    use tauri::{Emitter, Manager};
 
     let provider = image_provider.as_deref().unwrap_or("pollinations");
+    let count = frame_count_per_state.unwrap_or(8).max(1) as usize;
+    let state_specs = build_state_specs_with_count(count);
+    let total = state_specs.len() as u32;
+
+    let gen_pet_id = uuid::Uuid::new_v4().to_string();
     let pets_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("pets");
-    let state_specs = build_state_specs();
+    let raw_dir = pets_dir.join(&gen_pet_id).join("raw");
+    std::fs::create_dir_all(&raw_dir).map_err(|e| e.to_string())?;
 
-    // Total progress steps = total number of individual frames across all states.
-    let total: u32 = state_specs.iter().map(|s| s.frame_count as u32).sum();
-    let mut current: u32 = 0;
-    let mut call_count: u32 = 0;
-    let mut states: HashMap<String, SpriteStateInfo> = HashMap::new();
+    // Collect single-row strips for each state to stack vertically at the end.
+    let mut row_strips: Vec<RgbaImage> = Vec::new();
 
-    for spec in &state_specs {
-        let mut sheet = RgbaImage::new(spec.img_width(), spec.img_height());
+    for (idx, spec) in state_specs.iter().enumerate() {
+        let prompt = build_sprite_prompt(&base_prompt, spec);
 
-        for frame_idx in 0..spec.frame_count {
-            let prompt = build_frame_prompt(&base_prompt, &spec.state, frame_idx);
+        // Generate the full sprite sheet at API_CELL_SIZE per cell, then resize down.
+        let api_w = spec.cols as u32 * API_CELL_SIZE;
+        let api_h = spec.rows as u32 * API_CELL_SIZE;
 
-            // Some providers (SiliconFlow, LocalSD) require width > 256.
-            // We fetch at a larger size and let decode_sprite_sheet resize down to CELL_SIZE.
-            const API_SIZE: u32 = 512;
-
-            let fetch_result = match provider {
-                "siliconflow" => {
-                    let key = image_api_key.as_deref()
-                        .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
-                    let model = image_model.as_deref().unwrap_or("Tongyi-MAI/Z-Image-Turbo");
-                    fetch_image_siliconflow(&prompt, key, model, API_SIZE, API_SIZE).await
-                }
-                "localsd" => {
-                    let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
-                    fetch_image_localsd(&prompt, url, API_SIZE, API_SIZE).await
-                }
-                _ => {
-                    // Rate-limit free Pollinations API: 1 s between calls.
-                    if call_count > 0 {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                    let url = build_pollinations_url(&prompt, CELL_SIZE, CELL_SIZE);
-                    download_image(&url).await
-                }
-            };
-
-            let mut frame = fetch_result
-                .and_then(|b| decode_sprite_sheet(&b, CELL_SIZE, CELL_SIZE))
-                .map_err(|e| format!("生成「{}」第{}帧失败: {}", spec.state, frame_idx + 1, e))?;
-
-            apply_chroma_key(&mut frame, 30);
-
-            // Paste frame into the sprite sheet at (col, row) grid position.
-            let col = (frame_idx % spec.cols) as u32;
-            let row = (frame_idx / spec.cols) as u32;
-            imageops::replace(&mut sheet, &frame, (col * CELL_SIZE) as i64, (row * CELL_SIZE) as i64);
-
-            call_count += 1;
-            current += 1;
-            let _ = app.emit("generation-progress", serde_json::json!({
-                "current": current,
-                "total": total,
-            }));
-        }
-
-        save_sprite_sheet_png(&pets_dir, &pet_id, &spec.state, &sheet)?;
-
-        let delay_ms: u32 = match spec.state.as_str() {
-            "walking" | "waving" => 100,
-            _ => 120,
+        let fetch_result = match provider {
+            "siliconflow" => {
+                let key = image_api_key.as_deref()
+                    .ok_or_else(|| "SiliconFlow requires an API key (configure in Settings)".to_string())?;
+                let model = image_model.as_deref().unwrap_or("Tongyi-MAI/Z-Image-Turbo");
+                fetch_image_siliconflow(&prompt, key, model, api_w, api_h).await
+            }
+            "localsd" => {
+                let url = local_sd_url.as_deref().unwrap_or("http://localhost:7860");
+                fetch_image_localsd(&prompt, url, api_w, api_h).await
+            }
+            _ => {
+                let url = build_pollinations_url(&prompt, api_w, api_h);
+                download_image(&url).await
+            }
         };
 
-        states.insert(spec.state.clone(), SpriteStateInfo {
-            cols: spec.cols,
-            rows: spec.rows,
-            frame_count: spec.frame_count,
-            frame_w: CELL_SIZE,
-            frame_h: CELL_SIZE,
-            delay_ms,
+        let bytes = fetch_result
+            .map_err(|e| format!("生成「{}」动画失败: {}", spec.state, e))?;
+
+        // Save raw image before any processing.
+        let _ = std::fs::write(raw_dir.join(format!("{}.png", spec.state)), &bytes);
+
+        let store_w = spec.img_width();
+        let store_h = spec.img_height();
+        let mut sheet = decode_sprite_sheet(&bytes, store_w, store_h)
+            .map_err(|e| format!("解码「{}」精灵图失败: {}", spec.state, e))?;
+
+        apply_chroma_key(&mut sheet, 30);
+
+        // Rearrange multi-row grid into a single horizontal strip.
+        let single_row = flatten_to_single_row(
+            &sheet,
+            CELL_SIZE,
+            CELL_SIZE,
+            spec.cols as u32,
+            spec.rows as u32,
+        );
+        row_strips.push(single_row);
+
+        let _ = app.emit("generation-progress", serde_json::json!({
+            "current": idx as u32 + 1,
+            "total": total,
+        }));
+    }
+
+    // Stack all single-row strips vertically into one combined image.
+    let combined_w = row_strips[0].width();
+    let combined_h = CELL_SIZE * total;
+    let mut combined = RgbaImage::new(combined_w, combined_h);
+    for (row_idx, strip) in row_strips.iter().enumerate() {
+        imageops::replace(&mut combined, strip, 0, (row_idx as u32 * CELL_SIZE) as i64);
+    }
+
+    // Encode combined image as PNG and base64.
+    let mut png_bytes: Vec<u8> = Vec::new();
+    combined
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG编码失败: {e}"))?;
+
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let data_url = format!("data:image/png;base64,{}", b64);
+
+    Ok(GeneratePreviewResult {
+        data_url,
+        pet_id: gen_pet_id,
+        frame_w: CELL_SIZE,
+        frame_h: CELL_SIZE,
+        idle_frames:    count as u32,
+        walking_frames: count as u32,
+        waving_frames:  count as u32,
+        working_frames: count as u32,
+    })
+}
+
+/// Import a combined sprite sheet where each row is one animation state.
+/// Row order: idle, walking, waving, working.
+#[tauri::command]
+pub async fn save_combined_sprite_sheet(
+    app: tauri::AppHandle,
+    pet_id: String,
+    data_url: String,
+    frame_w: u32,
+    frame_h: u32,
+    row_gap: u32,
+    idle_frames: u32,
+    walking_frames: u32,
+    waving_frames: u32,
+    working_frames: u32,
+) -> Result<HashMap<String, SpriteStateInfo>, String> {
+    use tauri::Manager;
+
+    let bytes = decode_data_url(&data_url)?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+
+    let pets_dir = app.path().app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("pets");
+
+    let rows: &[(&str, u32, u32)] = &[
+        ("idle",    idle_frames,    150),
+        ("walking", walking_frames, 100),
+        ("waving",  waving_frames,  110),
+        ("working", working_frames, 120),
+    ];
+
+    let mut result: HashMap<String, SpriteStateInfo> = HashMap::new();
+
+    for (row_idx, (state, frame_count, delay_ms)) in rows.iter().enumerate() {
+        let y_start = row_idx as u32 * (frame_h + row_gap);
+        let row_w   = frame_w * frame_count;
+
+        if y_start + frame_h > rgba.height() {
+            return Err(format!(
+                "图片高度不足：「{}」行起始 y={} + 帧高 {} 超出图片高度 {}",
+                state, y_start, frame_h, rgba.height()
+            ));
+        }
+        if row_w > rgba.width() {
+            return Err(format!(
+                "图片宽度不足：「{}」需要 {} px（{}帧 × {}px），图片宽度为 {}",
+                state, row_w, frame_count, frame_w, rgba.width()
+            ));
+        }
+
+        let row_sheet = imageops::crop_imm(&rgba, 0, y_start, row_w, frame_h).to_image();
+        save_sprite_sheet_png(&pets_dir, &pet_id, state, &row_sheet)?;
+
+        result.insert(state.to_string(), SpriteStateInfo {
+            cols: *frame_count as usize,
+            rows: 1,
+            frame_count: *frame_count as usize,
+            frame_w,
+            frame_h,
+            delay_ms: *delay_ms,
         });
     }
 
-    Ok(states)
+    Ok(result)
 }
 
 fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
@@ -348,46 +443,92 @@ fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("base64 decode error: {e}"))
 }
 
+#[derive(serde::Deserialize)]
+pub struct FrameCell {
+    pub col: u32,
+    pub row: u32,
+}
+
 #[tauri::command]
-pub async fn save_custom_frames(
+pub async fn save_frame_selections(
     app: tauri::AppHandle,
     pet_id: String,
-    idle: String,
-    walking: String,
-    waving: String,
-    working: String,
+    data_url: String,
+    frame_w: u32,
+    frame_h: u32,
+    col_gap: u32,
+    row_gap: u32,
+    idle_cells: Vec<FrameCell>,
+    walking_cells: Vec<FrameCell>,
+    waving_cells: Vec<FrameCell>,
+    working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     use tauri::Manager;
 
-    let pets_dir = app.path().app_data_dir()
+    let bytes = decode_data_url(&data_url)?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+
+    let pets_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("pets");
 
-    let entries = [
-        ("idle",    &idle),
-        ("walking", &walking),
-        ("waving",  &waving),
-        ("working", &working),
+    // Each entry: (state_name, cells, delay_ms)
+    let state_entries: [(&str, &Vec<FrameCell>, u32); 4] = [
+        ("idle",    &idle_cells,    150),
+        ("walking", &walking_cells, 100),
+        ("waving",  &waving_cells,  110),
+        ("working", &working_cells, 120),
     ];
 
-    let mut states: HashMap<String, SpriteStateInfo> = HashMap::new();
+    let mut result: HashMap<String, SpriteStateInfo> = HashMap::new();
 
-    for (state, data_url) in &entries {
-        let bytes = decode_data_url(data_url)?;
-        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        let resized = imageops::resize(&img.to_rgba8(), 128, 128, imageops::FilterType::Lanczos3);
-        save_sprite_sheet_png(&pets_dir, pet_id.as_str(), state, &resized)?;
-        states.insert(state.to_string(), SpriteStateInfo {
-            cols: 1,
-            rows: 1,
-            frame_count: 1,
-            frame_w: 128,
-            frame_h: 128,
-            delay_ms: 200,
-        });
+    for (state, cells, delay_ms) in &state_entries {
+        if cells.is_empty() {
+            return Err(format!("「{}」动作没有选择任何帧", state));
+        }
+
+        let frame_count = cells.len() as u32;
+        let mut sheet = RgbaImage::new(frame_w * frame_count, frame_h);
+
+        for (i, cell) in cells.iter().enumerate() {
+            let src_x = cell.col * (frame_w + col_gap);
+            let src_y = cell.row * (frame_h + row_gap);
+
+            if src_x + frame_w > rgba.width() || src_y + frame_h > rgba.height() {
+                return Err(format!(
+                    "「{}」第 {} 帧超出图片边界 (x={}, y={}, 图片 {}×{})",
+                    state,
+                    i + 1,
+                    src_x,
+                    src_y,
+                    rgba.width(),
+                    rgba.height()
+                ));
+            }
+
+            let frame = imageops::crop_imm(&rgba, src_x, src_y, frame_w, frame_h).to_image();
+            imageops::replace(&mut sheet, &frame, (i as i64) * (frame_w as i64), 0);
+        }
+
+        save_sprite_sheet_png(&pets_dir, &pet_id, state, &sheet)?;
+
+        result.insert(
+            state.to_string(),
+            SpriteStateInfo {
+                cols: frame_count as usize,
+                rows: 1,
+                frame_count: frame_count as usize,
+                frame_w,
+                frame_h,
+                delay_ms: *delay_ms,
+            },
+        );
     }
 
-    Ok(states)
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -403,15 +544,15 @@ mod tests {
         assert_eq!(map["idle"],    8);
         assert_eq!(map["walking"], 8);
         assert_eq!(map["waving"],  8);
-        assert_eq!(map["working"], 6);
+        assert_eq!(map["working"], 8);
     }
 
     #[test]
     fn state_spec_grid_layout() {
         let specs = build_state_specs();
         for spec in &specs {
-            assert_eq!(spec.cols, 2);
-            assert_eq!(spec.rows, (spec.frame_count + 1) / 2);
+            assert_eq!(spec.cols, 4);
+            assert_eq!(spec.rows, (spec.frame_count + 3) / 4);
             assert_eq!(spec.img_width(),  spec.cols as u32 * CELL_SIZE);
             assert_eq!(spec.img_height(), spec.rows as u32 * CELL_SIZE);
         }
@@ -445,6 +586,20 @@ mod tests {
     }
 
     #[test]
+    fn apply_chroma_key_removes_dark_background() {
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+        img.put_pixel(1, 0, Rgba([0, 0, 0, 255]));
+        img.put_pixel(0, 1, Rgba([0, 0, 0, 255]));
+        img.put_pixel(1, 1, Rgba([100, 150, 200, 255]));
+        apply_chroma_key(&mut img, 30);
+        assert_eq!(img.get_pixel(0, 0)[3], 0, "black corner should be removed");
+        assert_eq!(img.get_pixel(1, 0)[3], 0, "black pixel should be removed");
+        assert_eq!(img.get_pixel(0, 1)[3], 0, "black pixel should be removed");
+        assert_eq!(img.get_pixel(1, 1)[3], 255, "colored pixel should be kept");
+    }
+
+    #[test]
     fn save_sprite_sheet_png_writes_correct_dimensions() {
         let dir = tempfile::TempDir::new().unwrap();
         let sheet = RgbaImage::new(256, 256);
@@ -457,20 +612,39 @@ mod tests {
     }
 
     #[test]
-    fn frame_phase_covers_all_states() {
-        for state in &["idle", "walking", "waving", "working"] {
-            for i in 0..8 {
-                let phase = frame_phase(state, i);
-                assert!(!phase.is_empty());
-            }
-        }
+    fn build_sprite_prompt_contains_base_and_key_terms() {
+        let specs = build_state_specs();
+        let walking_spec = specs.iter().find(|s| s.state == "walking").unwrap();
+        let prompt = build_sprite_prompt("anime cat girl", walking_spec);
+        assert!(prompt.contains("anime cat girl"), "should contain character desc");
+        assert!(prompt.contains("sprite sheet"),   "should contain sprite sheet keyword");
+        assert!(prompt.contains("walk"),           "should contain action keyword");
+        assert!(prompt.contains("4x2"),            "should contain grid dimensions");
+        assert!(prompt.contains("same character"), "should emphasize consistency");
     }
 
     #[test]
-    fn build_frame_prompt_contains_base_and_phase() {
-        let prompt = build_frame_prompt("anime cat girl", "idle", 0);
-        assert!(prompt.contains("anime cat girl"));
-        assert!(prompt.contains("chibi pixel art"));
-        assert!(prompt.contains("single animation frame"));
+    fn build_sprite_prompt_sprite_info_comes_before_character() {
+        let specs = build_state_specs();
+        let spec = specs.iter().find(|s| s.state == "idle").unwrap();
+        let prompt = build_sprite_prompt("a wizard cat", spec);
+        // Sprite sheet info must appear before character description so it
+        // is not lost if the URL truncates from the end.
+        let sprite_pos = prompt.find("sprite sheet").unwrap();
+        let char_pos   = prompt.find("wizard cat").unwrap();
+        assert!(sprite_pos < char_pos, "sprite sheet info should precede character desc");
+    }
+
+    #[test]
+    fn flatten_to_single_row_produces_correct_dimensions() {
+        // Build a 4×2 grid (4 cols, 2 rows) with 8 frames of 16×16 each.
+        let frame_w = 16u32;
+        let frame_h = 16u32;
+        let cols = 4u32;
+        let rows = 2u32;
+        let grid = RgbaImage::new(frame_w * cols, frame_h * rows);
+        let result = flatten_to_single_row(&grid, frame_w, frame_h, cols, rows);
+        assert_eq!(result.width(),  frame_w * cols * rows, "width should hold all frames");
+        assert_eq!(result.height(), frame_h,               "height should be one frame tall");
     }
 }

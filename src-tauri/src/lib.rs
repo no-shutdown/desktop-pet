@@ -46,7 +46,8 @@ pub fn run() {
             commands::settings::save_window_position,
             commands::settings::load_window_position,
             commands::generate::generate_and_assemble,
-            commands::generate::save_custom_frames,
+            commands::generate::save_combined_sprite_sheet,
+            commands::generate::save_frame_selections,
             commands::plugin::scan_plugins,
             commands::plugin::read_plugin_file,
         ])

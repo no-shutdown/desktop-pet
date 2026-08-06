@@ -2,11 +2,22 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { loadSettings, saveSettings, SILICONFLOW_MODELS, type ImageProvider } from '../../../lib/settings';
-import type { PetState, SpriteStateInfo } from '../../../types/pet';
+import type { GeneratedSpriteConfig } from './types';
+
+interface GeneratePreviewResult {
+  dataUrl: string;
+  petId: string;
+  frameW: number;
+  frameH: number;
+  idleFrames: number;
+  walkingFrames: number;
+  wavingFrames: number;
+  workingFrames: number;
+}
 
 interface GenerateStepProps {
   prompt: string;
-  onNext: (petId: string, states: Record<PetState, SpriteStateInfo>) => void;
+  onNext: (dataUrl: string, config: GeneratedSpriteConfig) => void;
   onBack: () => void;
 }
 
@@ -20,13 +31,15 @@ const IMAGE_OPTIONS: { value: ImageProvider; label: string; desc: string }[] = [
   { value: 'localsd',      label: '本地 Stable Diffusion',  desc: 'AUTOMATIC1111 WebUI' },
 ];
 
+const FRAME_COUNT_OPTIONS = [4, 6, 8, 12] as const;
+
 export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepProps) {
   const [status, setStatus] = useState<Status>('idle');
   const [progress, setProgress] = useState({ current: 0, total: TOTAL_STATES });
-  const [petId, setPetId] = useState<string | null>(null);
-  const [statesResult, setStatesResult] = useState<Record<PetState, SpriteStateInfo> | null>(null);
+  const [generateResult, setGenerateResult] = useState<GeneratePreviewResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [settings, setSettings] = useState(loadSettings);
+  const [frameCount, setFrameCount] = useState(8);
 
   function updateSettings(patch: Partial<ReturnType<typeof loadSettings>>) {
     setSettings((prev) => {
@@ -37,9 +50,7 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
   }
 
   async function handleGenerate() {
-    const id = crypto.randomUUID();
-    setPetId(id);
-    setStatesResult(null);
+    setGenerateResult(null);
     setStatus('generating');
     setProgress({ current: 0, total: TOTAL_STATES });
 
@@ -49,15 +60,15 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
     );
 
     try {
-      const states = await invoke<Record<PetState, SpriteStateInfo>>('generate_and_assemble', {
-        petId: id,
+      const result = await invoke<GeneratePreviewResult>('generate_and_assemble', {
         basePrompt: prompt,
+        frameCountPerState: frameCount,
         imageProvider: settings.imageProvider,
         imageApiKey: settings.imageApiKey || null,
         imageModel: settings.imageModel || null,
         localSdUrl: settings.localSdUrl || null,
       });
-      setStatesResult(states);
+      setGenerateResult(result);
       setStatus('done');
     } catch (err) {
       setErrorMsg((err as Error).message ?? String(err));
@@ -65,6 +76,19 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
     } finally {
       unlisten();
     }
+  }
+
+  function handleNext() {
+    if (!generateResult) return;
+    onNext(generateResult.dataUrl, {
+      petId: generateResult.petId,
+      frameW: generateResult.frameW,
+      frameH: generateResult.frameH,
+      idleFrames: generateResult.idleFrames,
+      walkingFrames: generateResult.walkingFrames,
+      wavingFrames: generateResult.wavingFrames,
+      workingFrames: generateResult.workingFrames,
+    });
   }
 
   const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
@@ -125,6 +149,27 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
             />
           )}
+
+          <p style={{ margin: '6px 0 0', fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            每动作帧数
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {FRAME_COUNT_OPTIONS.map((n) => (
+              <button
+                key={n}
+                onClick={() => setFrameCount(n)}
+                style={{
+                  flex: 1, padding: '5px 0', borderRadius: 6, fontSize: 13, fontWeight: 600,
+                  border: `1px solid ${frameCount === n ? '#4f8ef7' : '#e2e8f0'}`,
+                  background: frameCount === n ? '#4f8ef7' : '#fff',
+                  color: frameCount === n ? '#fff' : '#4a5568',
+                  cursor: 'pointer',
+                }}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -133,7 +178,7 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
           <>
             <div style={{ fontSize: 48 }}>✨</div>
             <p style={{ color: '#718096', textAlign: 'center', margin: 0 }}>
-              将生成 4 个动画状态，每个状态整体生成一张精灵图再保存为 PNG。
+              将生成 4 个动画状态，每个状态整体生成一张精灵图，生成后进入配置步骤。
               <br />
               <span style={{ fontSize: 13, color: '#a0aec0' }}>预计需要 1～3 分钟。</span>
             </p>
@@ -144,7 +189,9 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
           <>
             <div style={{ fontSize: 48 }}>⏳</div>
             <p style={{ color: '#4a5568', margin: 0 }}>
-              正在生成第 {progress.current} / {progress.total} 个动画状态…
+              {progress.current === 0
+                ? '准备中…'
+                : `正在生成第 ${progress.current} / ${progress.total} 个动画状态…`}
             </p>
             <div style={{ width: '100%', maxWidth: 360, background: '#e2e8f0', borderRadius: 6, overflow: 'hidden', height: 8 }}>
               <div style={{ width: `${pct}%`, height: '100%', background: '#4f8ef7', transition: 'width 0.3s ease' }} />
@@ -183,7 +230,7 @@ export default function GenerateStep({ prompt, onNext, onBack }: GenerateStepPro
 
         {status === 'done' ? (
           <button
-            onClick={() => petId && statesResult && onNext(petId, statesResult)}
+            onClick={handleNext}
             style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: '#4f8ef7', color: '#fff', cursor: 'pointer' }}
           >
             下一步
