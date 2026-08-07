@@ -1,14 +1,14 @@
 use super::types::StateDefinition;
 
-const BASE_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, shadow, glow, particles, detached effects, or key color inside the character";
-const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, shadow, glow, particles, detached effects, motion blur, speed lines, dust, stray pixels, or key color inside the character";
+const BASE_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, shadow, glow, particles, detached effects, gradients, vignette, or key color inside the character";
+const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, column divider, slot outline, shadow, glow, particles, detached effects, motion blur, speed lines, dust, stray pixels, gradients, vignette, or key color inside the character";
 
 pub fn build_base_prompt(base_description: &str, chroma_hex: &str, chroma_name: &str) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "Create a concise game-ready canonical reference image for {description}. One centered complete full-body character in a neutral relaxed pose; preserve the face, proportions, markings, palette, materials, clothing, accessories, and props as the identity source for every later animation frame. Use a flat {chroma_name} chroma background ({chroma_hex}). {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
+        "Create a game-ready canonical reference image for {description}. Render one centered complete full-body character in a neutral relaxed pose facing forward, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
     )
 }
 
@@ -22,7 +22,7 @@ pub fn build_row_prompt(
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "Using the attached canonical base image as the only identity reference for {description}, create exactly 8 full-body frames left-to-right on a flat {chroma_name} chroma background ({chroma_hex}). Arrange equal-width invisible slots with one centered complete pose per slot; no clipping, no overlap, no empty slots, no labels, and no borders. Keep stable scale and baseline, preserve identity exactly, and preserve the face, proportions, markings, palette, materials, clothing, accessories, and props. State action: {}. State requirements: {}. {}. {}",
+        "The attached canonical base image is a reference sheet showing 8 identical copies of the same character for {description}, laid out left-to-right in 8 equal-width slots on a flat {chroma_name} chroma background ({chroma_hex}). Replace each of the 8 copies' pose so together they form a single loopable animation cycle, while keeping every other visual property unchanged. Output an image that is exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on the same flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any visible column border, divider, grid, gap, or highlight between columns. All 8 characters share identical scale, identical facing direction, and feet aligned to a single shared horizontal ground line at the same vertical position in every frame; do not shift the baseline between frames beyond the small breathing amount required by the animation. Preserve identity exactly: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged across all 8 frames; only the pose changes. State action: {}. State requirements: {}. {}. {}",
         state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
     )
 }
@@ -61,6 +61,10 @@ mod tests {
             "centered",
             "complete full-body",
             "neutral relaxed pose",
+            "facing forward",
+            "85% of the frame height",
+            "feet planted",
+            "shared ground line",
             "face",
             "proportions",
             "markings",
@@ -88,6 +92,8 @@ mod tests {
             "glow",
             "particles",
             "detached effects",
+            "gradients",
+            "vignette",
             "key color inside the character",
         ] {
             assert!(
@@ -118,27 +124,29 @@ mod tests {
 
         for term in [
             "attached canonical base image",
-            "exactly 8 full-body frames",
+            "8 identical copies",
             "left-to-right",
             "flat cyan chroma background",
             "#00FFFF",
             "never use #00FFFF inside any character component",
             "props, highlights",
-            "equal-width invisible slots",
-            "one centered complete pose per slot",
-            "no clipping",
-            "no overlap",
-            "no empty slots",
-            "no labels",
-            "no borders",
+            "2048 pixels wide by 256 pixels tall",
+            "8:1 aspect ratio",
+            "8 equal-width columns of 256 pixels each",
+            "horizontally centered inside its column",
+            "shared horizontal ground line",
+            "identical scale",
+            "identical facing direction",
             "no cropped limbs",
-            "stable scale",
-            "baseline",
             "preserve identity",
+            "column divider",
+            "slot outline",
             "motion blur",
             "speed lines",
             "dust",
             "stray pixels",
+            "gradients",
+            "vignette",
         ] {
             assert!(
                 prompt.to_lowercase().contains(&term.to_lowercase()),

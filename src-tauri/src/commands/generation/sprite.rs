@@ -1,6 +1,9 @@
-use super::types::{state_definitions, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W};
+use super::types::{
+    state_definitions, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+};
 use base64::Engine as _;
 use image::{imageops::FilterType, DynamicImage, Rgba, RgbaImage};
+use std::collections::VecDeque;
 use std::io::Cursor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,26 +117,331 @@ pub fn apply_chroma_key(image: &mut RgbaImage, key: &ChromaKey, threshold: u8) {
     }
 }
 
+fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, height: u32) {
+    if x > 0 {
+        queue.push_back((x - 1, y));
+    }
+    if x + 1 < width {
+        queue.push_back((x + 1, y));
+    }
+    if y > 0 {
+        queue.push_back((x, y - 1));
+    }
+    if y + 1 < height {
+        queue.push_back((x, y + 1));
+    }
+}
+
+/// Samples the actual background colour from an outer border strip and returns
+/// the per-channel median. Median is robust to a character occasionally
+/// reaching into the border strip; only >50% intrusion would poison it.
+fn sample_border_color(image: &RgbaImage) -> Option<[u8; 3]> {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    const STRIP: u32 = 4;
+    let strip = STRIP.min(width).min(height);
+    if strip == 0 {
+        return None;
+    }
+
+    let mut reds: Vec<u8> = Vec::new();
+    let mut greens: Vec<u8> = Vec::new();
+    let mut blues: Vec<u8> = Vec::new();
+
+    let collect = |x: u32, y: u32, buffer: &RgbaImage,
+                   reds: &mut Vec<u8>,
+                   greens: &mut Vec<u8>,
+                   blues: &mut Vec<u8>| {
+        let [r, g, b, a] = buffer.get_pixel(x, y).0;
+        if a > 0 {
+            reds.push(r);
+            greens.push(g);
+            blues.push(b);
+        }
+    };
+
+    for y in 0..strip {
+        for x in 0..width {
+            collect(x, y, image, &mut reds, &mut greens, &mut blues);
+        }
+    }
+    let bottom_start = height.saturating_sub(strip);
+    for y in bottom_start.max(strip)..height {
+        for x in 0..width {
+            collect(x, y, image, &mut reds, &mut greens, &mut blues);
+        }
+    }
+    let side_y_range = strip..height.saturating_sub(strip);
+    for y in side_y_range {
+        for x in 0..strip {
+            collect(x, y, image, &mut reds, &mut greens, &mut blues);
+        }
+        let right_start = width.saturating_sub(strip);
+        for x in right_start.max(strip)..width {
+            collect(x, y, image, &mut reds, &mut greens, &mut blues);
+        }
+    }
+
+    if reds.is_empty() {
+        return None;
+    }
+    reds.sort_unstable();
+    greens.sort_unstable();
+    blues.sort_unstable();
+    let mid = reds.len() / 2;
+    Some([reds[mid], greens[mid], blues[mid]])
+}
+
+/// Removes the chroma-key background via BFS from all four image edges.
+///
+/// The actual background colour is sampled from a border strip using per-channel
+/// median (robust to a character intruding into the strip). BFS then removes
+/// only pixels connected to the border that are close to that sampled colour,
+/// so interior character pixels sharing a similar hue are always protected.
+pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
+    const FILL_THRESHOLD: f32 = 80.0;
+    const RAMP_WIDTH: f32 = 20.0;
+    let ramp_end = FILL_THRESHOLD + RAMP_WIDTH;
+    let width = image.width();
+    let height = image.height();
+
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    // Use the sampled border colour so off-hue AI backgrounds are still caught.
+    // Fall back to the ideal key only if the border sample looks nothing like it.
+    let actual_bg = match sample_border_color(image) {
+        Some(sampled) => {
+            let dist = (squared_rgb_distance(sampled, key.rgb) as f32).sqrt();
+            if dist < 200.0 { sampled } else { key.rgb }
+        }
+        None => key.rgb,
+    };
+
+    let mut processed = vec![false; (width * height) as usize];
+    let mut queue: VecDeque<(u32, u32)> = VecDeque::new();
+
+    for x in 0..width {
+        queue.push_back((x, 0));
+        if height > 1 {
+            queue.push_back((x, height - 1));
+        }
+    }
+    for y in 1..height.saturating_sub(1) {
+        queue.push_back((0, y));
+        if width > 1 {
+            queue.push_back((width - 1, y));
+        }
+    }
+
+    while let Some((x, y)) = queue.pop_front() {
+        let idx = (y * width + x) as usize;
+        if processed[idx] {
+            continue;
+        }
+        processed[idx] = true;
+
+        let [r, g, b, a] = image.get_pixel(x, y).0;
+
+        if a == 0 {
+            push_neighbors(&mut queue, x, y, width, height);
+            continue;
+        }
+
+        let distance = (squared_rgb_distance([r, g, b], actual_bg) as f32).sqrt();
+
+        if distance > ramp_end {
+            continue;
+        }
+
+        let new_alpha = if distance <= FILL_THRESHOLD {
+            0u8
+        } else {
+            let ratio = (distance - FILL_THRESHOLD) / RAMP_WIDTH;
+            (f32::from(a) * ratio).round() as u8
+        };
+
+        if new_alpha == 0 {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+        } else {
+            image.put_pixel(x, y, Rgba([r, g, b, new_alpha]));
+        }
+
+        push_neighbors(&mut queue, x, y, width, height);
+    }
+}
+
 pub fn normalize_horizontal_row(bytes: &[u8], key: &ChromaKey) -> Result<RgbaImage, String> {
     let decoded =
         image::load_from_memory(bytes).map_err(|error| format!("decode image: {error}"))?;
-    let mut row = decoded
-        .resize_exact(FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H, FilterType::Lanczos3)
-        .to_rgba8();
-    apply_chroma_key(&mut row, key, 32);
-    Ok(row)
+    let mut source = decoded.to_rgba8();
+    remove_chroma_background(&mut source, key);
+    Ok(slice_row_into_frames(&source, DEFAULT_FRAME_COUNT))
+}
+
+/// Splits a raw row image (background already removed) into `frame_count`
+/// output frames of `FRAME_W`×`FRAME_H` each, re-centering each character
+/// horizontally in its own frame while sharing a common vertical scale and
+/// bottom-aligned baseline across all frames.
+///
+/// This is more robust than trusting the AI to place characters at exact
+/// 1/8th column boundaries: AI models routinely leave asymmetric side padding,
+/// cluster characters off-center, or output different total widths. Slicing
+/// against the visible content bounds and re-centering per column fixes those.
+fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
+    let dst_width = FRAME_W * frame_count;
+    let mut dst = RgbaImage::new(dst_width, FRAME_H);
+    if frame_count == 0 {
+        return dst;
+    }
+
+    let Some((x_min, y_min, x_max, y_max)) = find_visible_bounds(source) else {
+        return dst;
+    };
+
+    let content_w = x_max - x_min + 1;
+    let content_h = y_max - y_min + 1;
+    let segment_w = (content_w / frame_count).max(1);
+
+    // Shared vertical scale so every character has the same on-screen height.
+    // The horizontal cap keeps a wide-outlier frame (waving arm reaching out)
+    // from breaking the 128-wide destination frame.
+    let scale_v = f64::from(FRAME_H) / f64::from(content_h);
+    let scale_h = f64::from(FRAME_W) / f64::from(segment_w);
+    let global_scale = scale_v.min(scale_h);
+
+    for i in 0..frame_count {
+        let seg_x_start = x_min + i * segment_w;
+        let seg_x_end = if i == frame_count - 1 {
+            x_max
+        } else {
+            seg_x_start + segment_w - 1
+        };
+
+        let Some((xi_min, xi_max)) = find_segment_x_bounds(
+            source, seg_x_start, seg_x_end, y_min, y_max,
+        ) else {
+            // Blank segment: leave the destination frame transparent so the
+            // caller's validate_sprite_row surfaces a specific empty-frame error.
+            continue;
+        };
+
+        let src_w = xi_max - xi_min + 1;
+        let cropped = image::imageops::crop_imm(source, xi_min, y_min, src_w, content_h).to_image();
+
+        let scaled_w = ((f64::from(src_w) * global_scale).round() as u32)
+            .max(1)
+            .min(FRAME_W);
+        let scaled_h = ((f64::from(content_h) * global_scale).round() as u32)
+            .max(1)
+            .min(FRAME_H);
+        let scaled = DynamicImage::ImageRgba8(cropped)
+            .resize_exact(scaled_w, scaled_h, FilterType::Lanczos3)
+            .to_rgba8();
+
+        let dst_frame_x = i * FRAME_W;
+        let dst_x_offset = (FRAME_W - scaled_w) / 2;
+        let dst_y_offset = FRAME_H - scaled_h;
+
+        for (px, py, pixel) in scaled.enumerate_pixels() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let dx = dst_frame_x + dst_x_offset + px;
+            let dy = dst_y_offset + py;
+            if dx < dst_width && dy < FRAME_H {
+                dst.put_pixel(dx, dy, *pixel);
+            }
+        }
+    }
+
+    dst
+}
+
+fn find_visible_bounds(image: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let mut x_min = image.width();
+    let mut x_max = 0u32;
+    let mut y_min = image.height();
+    let mut y_max = 0u32;
+    let mut found = false;
+
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        found = true;
+        x_min = x_min.min(x);
+        x_max = x_max.max(x);
+        y_min = y_min.min(y);
+        y_max = y_max.max(y);
+    }
+
+    found.then_some((x_min, y_min, x_max, y_max))
+}
+
+fn find_segment_x_bounds(
+    image: &RgbaImage,
+    x_start: u32,
+    x_end: u32,
+    y_start: u32,
+    y_end: u32,
+) -> Option<(u32, u32)> {
+    let mut xi_min = image.width();
+    let mut xi_max = 0u32;
+    let mut found = false;
+
+    for y in y_start..=y_end {
+        for x in x_start..=x_end {
+            if image.get_pixel(x, y)[3] > 0 {
+                found = true;
+                xi_min = xi_min.min(x);
+                xi_max = xi_max.max(x);
+            }
+        }
+    }
+
+    found.then_some((xi_min, xi_max))
+}
+
+pub fn build_row_reference(base: &RgbaImage) -> RgbaImage {
+    // Base is already at API_FRAME_W × API_FRAME_H after normalize_base_image;
+    // just tile it 8 times side-by-side, no upscaling.
+    let mut reference = RgbaImage::new(API_FRAME_W * DEFAULT_FRAME_COUNT, API_FRAME_H);
+
+    for frame_index in 0..DEFAULT_FRAME_COUNT {
+        for y in 0..API_FRAME_H {
+            for x in 0..API_FRAME_W {
+                reference.put_pixel(
+                    frame_index * API_FRAME_W + x,
+                    y,
+                    *base.get_pixel(x, y),
+                );
+            }
+        }
+    }
+
+    reference
 }
 
 pub fn normalize_base_image(bytes: &[u8], key: &ChromaKey) -> Result<RgbaImage, String> {
     let decoded =
         image::load_from_memory(bytes).map_err(|error| format!("decode image: {error}"))?;
-    let mut base = decoded
-        .resize_exact(FRAME_W, FRAME_H, FilterType::Lanczos3)
-        .to_rgba8();
-    apply_chroma_key(&mut base, key, 32);
-    if !base.pixels().any(|pixel| pixel[3] != 0) {
+    // Remove background at source resolution first so Lanczos3 doesn't blend
+    // background colour into character edge pixels before keying.
+    let mut source = decoded.to_rgba8();
+    remove_chroma_background(&mut source, key);
+    if !source.pixels().any(|pixel| pixel[3] != 0) {
         return Err("canonical base image is empty after chroma keying".to_string());
     }
+    // Store at API-resolution (256×256) so the row-reference sheet doesn't have
+    // to upscale a downsampled base again — preserves identity detail.
+    let base = DynamicImage::ImageRgba8(source)
+        .resize_exact(API_FRAME_W, API_FRAME_H, FilterType::Lanczos3)
+        .to_rgba8();
     Ok(base)
 }
 
@@ -220,11 +528,14 @@ fn squared_rgb_distance(left: [u8; 3], right: [u8; 3]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_chroma_key, assemble_rows, choose_chroma_key, chroma_key_from_hex, image_to_data_url,
-        normalize_base_image, normalize_horizontal_row, validate_sprite_row, ChromaKey,
+        apply_chroma_key, assemble_rows, build_row_reference, choose_chroma_key,
+        chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
+        remove_chroma_background, validate_sprite_row, ChromaKey,
         CHROMA_KEY_CANDIDATES,
     };
-    use crate::commands::generation::types::{DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W};
+    use crate::commands::generation::types::{
+        API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    };
     use base64::Engine;
     use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
     use std::io::Cursor;
@@ -308,6 +619,44 @@ mod tests {
     }
 
     #[test]
+    fn builds_a_wide_reference_with_one_base_pose_per_api_slot() {
+        let base = RgbaImage::from_pixel(API_FRAME_W, API_FRAME_H, Rgba([20, 30, 40, 255]));
+
+        let reference = build_row_reference(&base);
+
+        assert_eq!(
+            reference.dimensions(),
+            (API_FRAME_W * DEFAULT_FRAME_COUNT, API_FRAME_H)
+        );
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let center_x = frame_index * API_FRAME_W + API_FRAME_W / 2;
+            assert_eq!(
+                reference.get_pixel(center_x, API_FRAME_H / 2).0,
+                [20, 30, 40, 255]
+            );
+        }
+    }
+
+    #[test]
+    fn crops_vertical_letterboxing_before_normalizing_a_wide_row() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut source = RgbaImage::from_pixel(2048, 1024, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            for x in (frame_index * 256 + 64)..(frame_index * 256 + 192) {
+                for y in 384..640 {
+                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+        }
+
+        let normalized = normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+
+        assert_eq!(normalized.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
+        assert!(normalized.get_pixel(FRAME_W / 2, 0)[3] > 0);
+        validate_sprite_row(&normalized, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
+    }
+
+    #[test]
     fn normalizes_a_canonical_base_to_one_nonempty_frame() {
         let mut source = RgbaImage::from_pixel(16, 16, Rgba([255, 0, 255, 255]));
         source.put_pixel(8, 8, Rgba([20, 30, 40, 255]));
@@ -315,7 +664,7 @@ mod tests {
 
         let normalized = normalize_base_image(&png_bytes(&source), &key).unwrap();
 
-        assert_eq!(normalized.dimensions(), (FRAME_W, FRAME_H));
+        assert_eq!(normalized.dimensions(), (API_FRAME_W, API_FRAME_H));
         assert!(normalized.pixels().any(|pixel| pixel[3] != 0));
         assert_eq!(normalized.get_pixel(0, 0).0, [0, 0, 0, 0]);
     }
@@ -443,5 +792,121 @@ mod tests {
             .unwrap();
         let decoded = image::load_from_memory(&bytes).unwrap();
         assert_eq!(decoded.dimensions(), (2, 2));
+    }
+
+    #[test]
+    fn per_frame_slicing_recenters_characters_that_the_ai_placed_off_center() {
+        // Simulate an AI-generated row where every character is shoved into the
+        // right half of its 256-pixel column. Old naive equal-slice would clip
+        // them; the new algorithm should re-center each one in its output frame.
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut source = RgbaImage::from_pixel(
+            2048,
+            256,
+            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+        );
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let x_start = frame_index * 256 + 200;
+            let x_end = frame_index * 256 + 232;
+            for x in x_start..x_end {
+                for y in 32..224 {
+                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+        }
+
+        let normalized =
+            normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+
+        assert_eq!(normalized.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
+        validate_sprite_row(&normalized, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let center = frame_index * FRAME_W + FRAME_W / 2;
+            assert!(
+                normalized.get_pixel(center, FRAME_H / 2)[3] > 0,
+                "frame {frame_index} character should be re-centered around x={center}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_frame_slicing_uses_a_shared_baseline_across_frames_of_different_heights() {
+        // Two "tall" characters (arm raised, occupying 200 rows) and six shorter
+        // ones (100 rows) in the same row. All should sit on the same ground
+        // line — the bottom-most opaque pixel of every frame must match.
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut source = RgbaImage::from_pixel(
+            2048,
+            256,
+            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+        );
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let base_x = frame_index * 256 + 96;
+            let tall = frame_index % 4 == 0;
+            let y_start = if tall { 40 } else { 140 };
+            for x in base_x..(base_x + 64) {
+                for y in y_start..240 {
+                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+        }
+
+        let normalized =
+            normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+
+        let mut per_frame_bottom = Vec::new();
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let start_x = frame_index * FRAME_W;
+            let mut bottom = None;
+            for y in (0..FRAME_H).rev() {
+                if (start_x..start_x + FRAME_W)
+                    .any(|x| normalized.get_pixel(x, y)[3] > 0)
+                {
+                    bottom = Some(y);
+                    break;
+                }
+            }
+            per_frame_bottom.push(bottom.expect("frame should have visible pixels"));
+        }
+
+        assert_eq!(per_frame_bottom[0], FRAME_H - 1);
+        for value in &per_frame_bottom {
+            assert_eq!(
+                *value, per_frame_bottom[0],
+                "every frame must share the same baseline row"
+            );
+        }
+    }
+
+    #[test]
+    fn border_sampling_survives_a_character_intruding_into_one_corner() {
+        // Solid green background with a small dark blob in the top-left corner.
+        // Corner-mean would pull the sampled bg toward the blob; the median
+        // survives because <50% of border pixels are the intruder.
+        let key = ChromaKey {
+            name: "green",
+            hex: "#00FF00",
+            rgb: [0, 255, 0],
+        };
+        let mut image = RgbaImage::from_pixel(64, 64, Rgba([0, 255, 0, 255]));
+        for y in 0..3 {
+            for x in 0..3 {
+                image.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+            }
+        }
+
+        remove_chroma_background(&mut image, &key);
+
+        // Every green pixel should be gone; the intruder should be preserved.
+        for y in 8..56 {
+            for x in 8..56 {
+                assert_eq!(
+                    image.get_pixel(x, y).0,
+                    [0, 0, 0, 0],
+                    "background pixel at ({x},{y}) should be removed"
+                );
+            }
+        }
+        assert_eq!(image.get_pixel(1, 1).0, [20, 30, 40, 255]);
     }
 }

@@ -28,12 +28,12 @@ use self::run::{
     mark_state_complete as complete_state, mark_state_generating as begin_state,
 };
 use self::sprite::{
-    assemble_rows, choose_chroma_key, chroma_key_from_hex, image_to_data_url, normalize_base_image,
-    normalize_horizontal_row, validate_sprite_row, ChromaKey,
+    assemble_rows, build_row_reference, choose_chroma_key, chroma_key_from_hex, image_to_data_url,
+    normalize_base_image, normalize_horizontal_row, validate_sprite_row, ChromaKey,
 };
 use self::types::{
     state_definition, state_definitions, ArtifactStatus, GenerationRunManifest, ProviderConfig,
-    StateDefinition, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    StateDefinition, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
 };
 
 const DEFAULT_BASE_MODEL: &str = "Tongyi-MAI/Z-Image-Turbo";
@@ -447,10 +447,10 @@ pub async fn generate_state_row(
     let selected_key = chroma_key_for_manifest(&manifest)?;
     let base_path = run_dir(&data_dir, &run_id)?.join("base.png");
     let base = read_png(&base_path, "canonical base image")?;
-    if base.dimensions() != (FRAME_W, FRAME_H) {
+    if base.dimensions() != (API_FRAME_W, API_FRAME_H) {
         return Err("canonical base image has invalid dimensions".to_string());
     }
-    let base_data_url = image_to_data_url(&base)?;
+    let row_reference_data_url = image_to_data_url(&build_row_reference(&base))?;
     begin_state(&data_dir, &run_id, &state)?;
 
     let prompt = build_row_prompt(
@@ -472,7 +472,7 @@ pub async fn generate_state_row(
         &run_id,
         &state,
         &selected_key,
-        generate_row(&config, &prompt, &base_data_url).await,
+        generate_row(&config, &prompt, &row_reference_data_url).await,
         image_api_key.as_deref(),
     )?;
     emit_progress(
@@ -783,10 +783,18 @@ mod command_tests {
     }
 
     fn keyed_row(key: super::sprite::ChromaKey) -> RgbaImage {
+        // A raw AI-style row: 8 chroma-keyed columns each with a small solid
+        // character blob. Blobs are large enough (16×64) that per-frame slicing
+        // will preserve visible pixels in every output frame.
         let mut row =
             RgbaImage::from_pixel(1024, 128, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
         for frame in 0..8u32 {
-            row.put_pixel(frame * 128 + 16, 16, Rgba([20, 30, 40, 255]));
+            let x_start = frame * 128 + 56;
+            for x in x_start..(x_start + 16) {
+                for y in 32..96 {
+                    row.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
         }
         row
     }
@@ -971,7 +979,12 @@ mod command_tests {
 
         assert_eq!(row.dimensions(), (1024, 128));
         assert_eq!(row.get_pixel(0, 0)[3], 0);
-        assert_eq!(row.get_pixel(16, 16)[3], 255);
+        for frame in 0..8u32 {
+            let start_x = frame * 128;
+            let has_visible = (start_x..start_x + 128)
+                .any(|x| (0..128).any(|y| row.get_pixel(x, y)[3] > 0));
+            assert!(has_visible, "frame {frame} lost its character after slicing");
+        }
         assert!(run_dir(temp.path(), "run-1")
             .unwrap()
             .join("rows/idle.png")

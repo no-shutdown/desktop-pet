@@ -43,14 +43,23 @@ pub fn siliconflow_row_body(
     width: u32,
     height: u32,
 ) -> Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "prompt": prompt,
         "image": image_data_url,
-        "image_size": format!("{width}x{height}"),
         "num_inference_steps": 20,
-        "num_images": 1,
     })
+    ;
+
+    if !matches!(
+        model.trim(),
+        "Qwen/Qwen-Image-Edit-2509" | "Qwen/Qwen-Image-Edit"
+    ) {
+        body["image_size"] = serde_json::json!(format!("{width}x{height}"));
+        body["num_images"] = serde_json::json!(1);
+    }
+
+    body
 }
 
 pub fn local_sd_base_body(prompt: &str, width: u32, height: u32) -> Value {
@@ -792,11 +801,23 @@ mod tests {
                 "model": "Qwen/Qwen-Image-Edit-2509",
                 "prompt": "row prompt",
                 "image": BASE_IMAGE,
-                "image_size": "2048x256",
                 "num_inference_steps": 20,
-                "num_images": 1,
             })
         );
+    }
+
+    #[test]
+    fn siliconflow_kolors_row_body_keeps_explicit_output_size() {
+        let body = siliconflow_row_body(
+            "Kwai-Kolors/Kolors",
+            "row prompt",
+            BASE_IMAGE,
+            2048,
+            256,
+        );
+
+        assert_eq!(body["image_size"], "2048x256");
+        assert_eq!(body["num_images"], 1);
     }
 
     #[test]
