@@ -22,8 +22,8 @@ pub fn build_row_prompt(
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "The attached canonical base image is a reference sheet showing 8 identical copies of the same character for {description}, laid out left-to-right in 8 equal-width slots on a flat {chroma_name} chroma background ({chroma_hex}). Replace each of the 8 copies' pose so together they form a single loopable animation cycle, while keeping every other visual property unchanged. Output an image that is exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on the same flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any visible column border, divider, grid, gap, or highlight between columns. All 8 characters share identical scale, identical facing direction, and feet aligned to a single shared horizontal ground line at the same vertical position in every frame; do not shift the baseline between frames beyond the small breathing amount required by the animation. Preserve identity exactly: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged across all 8 frames; only the pose changes. State action: {}. State requirements: {}. {}. {}",
-        state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
+        "The attached canonical base image is a reference sheet showing 8 identical copies of the same character for {description}, laid out left-to-right in 8 equal-width slots on a flat {chroma_name} chroma background ({chroma_hex}). Replace each of the 8 copies' pose so together they form a single loopable animation cycle, while keeping every other visual property unchanged. Output an image that is exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on the same flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any visible column border, divider, grid, gap, or highlight between columns. All 8 characters share identical scale and feet aligned to a single shared horizontal ground line at the same vertical position in every frame; do not shift the baseline between frames beyond the small breathing amount required by the animation. Preserve identity exactly: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged across all 8 frames; only the pose changes. FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. State action: {}. State requirements: {}. {}. {}",
+        state.facing, state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
     )
 }
 
@@ -136,7 +136,9 @@ mod tests {
             "horizontally centered inside its column",
             "shared horizontal ground line",
             "identical scale",
-            "identical facing direction",
+            "facing direction lock",
+            "facing right",
+            "never mirror, flip, or reverse",
             "no cropped limbs",
             "preserve identity",
             "column divider",
