@@ -35,8 +35,8 @@ interface GenerateStepProps {
 type Status = 'idle' | 'generating' | 'ready' | 'error';
 
 const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[] = [
-  { value: 'siliconflow', label: 'SiliconFlow', desc: 'Hosted image generation' },
-  { value: 'localsd', label: 'Local Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
+  { value: 'siliconflow', label: '硅基流动 SiliconFlow', desc: '云端图像生成' },
+  { value: 'localsd', label: '本地 Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
 ];
 
 function makeRunId(): string {
@@ -168,7 +168,7 @@ export default function GenerateStep({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={{ background: '#f7fafc', borderRadius: 10, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Canonical Base generation
+          生成基础图像
         </p>
         {IMAGE_OPTIONS.map(({ value, label, desc }) => (
           <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
@@ -191,16 +191,16 @@ export default function GenerateStep({
           <>
             <input
               type="password"
-              aria-label="Image API key"
+              aria-label="图像 API Key"
               value={settings.imageApiKey}
               onChange={(event) => updateSettings({ imageApiKey: event.target.value })}
-              placeholder="Image API key"
+              placeholder="图像 API Key"
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
             />
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
-              Base model
+              基础模型
               <select
-                aria-label="Base model"
+                aria-label="基础模型"
                 value={settings.imageBaseModel}
                 onChange={(event) => updateSettings({
                   imageBaseModel: event.target.value,
@@ -214,9 +214,9 @@ export default function GenerateStep({
               </select>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
-              Reference model
+              参考模型
               <select
-                aria-label="Reference model"
+                aria-label="参考模型"
                 value={settings.imageReferenceModel}
                 onChange={(event) => updateSettings({ imageReferenceModel: event.target.value })}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
@@ -232,7 +232,7 @@ export default function GenerateStep({
         {provider === 'localsd' && (
           <input
             type="text"
-            aria-label="Local Stable Diffusion URL"
+            aria-label="本地 Stable Diffusion 地址"
             value={settings.localSdUrl}
             onChange={(event) => updateSettings({ localSdUrl: event.target.value })}
             placeholder="http://localhost:7860"
@@ -252,16 +252,16 @@ export default function GenerateStep({
           <div style={{ fontSize: 48 }}>{status === 'error' ? '⚠️' : '🧱'}</div>
         )}
 
-        {status === 'idle' && <p style={{ color: '#718096', margin: 0 }}>Generate and review the canonical Base image before making state rows.</p>}
+        {status === 'idle' && <p style={{ color: '#718096', margin: 0 }}>生成并确认基础图像后，再生成各动画状态。</p>}
         {status === 'generating' && (
           <>
-            <p style={{ color: '#4a5568', margin: 0 }}>Generating Base…</p>
+            <p style={{ color: '#4a5568', margin: 0 }}>生成中…</p>
             <div style={{ width: '100%', maxWidth: 360, background: '#e2e8f0', borderRadius: 6, overflow: 'hidden', height: 8 }}>
               <div style={{ width: `${progressPercent}%`, height: '100%', background: '#4f8ef7', transition: 'width 0.3s ease' }} />
             </div>
           </>
         )}
-        {status === 'ready' && preview && <p style={{ color: '#38a169', margin: 0 }}>Base ready · chroma key {preview.chromaKey}</p>}
+        {status === 'ready' && preview && <p style={{ color: '#38a169', margin: 0 }}>基础图像已就绪 · 色键 {preview.chromaKey}</p>}
         {errorMsg && <p role="alert" style={{ color: '#e53e3e', margin: 0, whiteSpace: 'pre-wrap' }}>{errorMsg}</p>}
       </div>
 
@@ -271,7 +271,7 @@ export default function GenerateStep({
           disabled={generating}
           style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: generating ? 'not-allowed' : 'pointer' }}
         >
-          Back
+          上一步
         </button>
 
         {status === 'ready' ? (
@@ -281,13 +281,13 @@ export default function GenerateStep({
               disabled={generating}
               style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #4f8ef7', background: '#fff', color: '#4f8ef7', cursor: 'pointer' }}
             >
-              Retry Base
+              重新生成
             </button>
             <button
               onClick={handleConfirm}
               style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: '#4f8ef7', color: '#fff', cursor: 'pointer' }}
             >
-              Confirm Base
+              确认基础图像
             </button>
           </>
         ) : (
@@ -296,7 +296,7 @@ export default function GenerateStep({
             disabled={generating}
             style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: generating ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: generating ? 'not-allowed' : 'pointer' }}
           >
-            {status === 'error' ? 'Retry Base' : 'Generate Base'}
+            {status === 'error' ? '重新生成' : '生成基础图像'}
           </button>
         )}
       </div>

@@ -41,14 +41,14 @@ export default function ContextMenu({ x, y, visible, onClose, onSwitchPet, onOpe
         minWidth: 160,
       }}>
         <div style={{ ...itemStyle, color: '#2d3748' }} onClick={onSwitchPet}>
-          Switch Pet
+          切换宠物
         </div>
         <div style={{ ...itemStyle, color: '#2d3748' }} onClick={onOpenCreator}>
-          Open Creator
+          打开创建器
         </div>
         <div style={{ borderTop: '1px solid #e2e8f0' }} />
         <div style={{ ...itemStyle, color: '#e53e3e' }} onClick={onExit}>
-          Exit
+          退出
         </div>
       </div>
     </>

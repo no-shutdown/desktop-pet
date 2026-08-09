@@ -17,13 +17,13 @@ type Step = 'upload' | 'analyze' | 'base-generate' | 'state-generate' | 'sprite-
 const AI_STEPS: Step[] = ['upload', 'analyze', 'base-generate', 'state-generate', 'sprite-import', 'preview', 'save'];
 const SPRITE_STEPS: Step[] = ['sprite-import', 'preview', 'save'];
 const STEP_LABELS: Record<Step, string> = {
-  upload: 'Upload',
-  analyze: 'Analyze',
-  'base-generate': 'Base',
-  'state-generate': 'States',
-  'sprite-import': 'Configure',
-  preview: 'Preview',
-  save: 'Save',
+  upload: '上传',
+  analyze: '分析',
+  'base-generate': '基础',
+  'state-generate': '状态',
+  'sprite-import': '配置',
+  preview: '预览',
+  save: '保存',
 };
 
 function makeGenerationRunId(): string {
@@ -86,17 +86,17 @@ export default function CreatorWindow() {
     return (
       <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-          <h1 style={{ margin: 0, fontSize: 24 }}>Create your desktop pet</h1>
+          <h1 style={{ margin: 0, fontSize: 24 }}>创建你的桌面宠物</h1>
           <button
             onClick={() => setShowSettings(true)}
             disabled={generationBusy}
-            title="Settings"
+            title="设置"
             style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: generationBusy ? 'not-allowed' : 'pointer', color: '#718096', fontSize: 18, lineHeight: 1, opacity: generationBusy ? 0.5 : 1 }}
           >
             ⚙️
           </button>
         </div>
-        <p style={{ color: '#718096', marginBottom: 48 }}>Turn a reference image into a living desktop companion.</p>
+        <p style={{ color: '#718096', marginBottom: 48 }}>将参考图片变成活生生的桌面伴侣。</p>
 
         <div style={{ display: 'flex', gap: 24 }}>
           <button
@@ -104,16 +104,16 @@ export default function CreatorWindow() {
             style={{ flex: 1, padding: '32px 24px', borderRadius: 12, border: '2px solid #e2e8f0', background: '#fff', cursor: 'pointer', textAlign: 'left' }}
           >
             <div style={{ fontSize: 40, marginBottom: 12 }}>🐾</div>
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>AI generation</div>
-            <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>Upload a reference, analyze it, generate a canonical Base, then generate each animation state.</div>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>AI 生成</div>
+            <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>上传参考图，分析角色，生成基础图像，再生成各动画状态。</div>
           </button>
           <button
             onClick={() => { setData(INITIAL_WIZARD_DATA); setMode('sprite'); setStep('sprite-import'); }}
             style={{ flex: 1, padding: '32px 24px', borderRadius: 12, border: '2px solid #e2e8f0', background: '#fff', cursor: 'pointer', textAlign: 'left' }}
           >
             <div style={{ fontSize: 40, marginBottom: 12 }}>🖼️</div>
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>Import sprite sheet</div>
-            <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>Import an existing horizontal or grid sprite sheet and configure its frame selections.</div>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6, color: '#1a202c' }}>导入精灵图</div>
+            <div style={{ fontSize: 13, color: '#718096', lineHeight: 1.5 }}>导入现有的横排或网格精灵图，并配置帧选择。</div>
           </button>
         </div>
       </div>
@@ -123,17 +123,17 @@ export default function CreatorWindow() {
   return (
     <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', maxWidth: 760, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-        <h1 style={{ margin: 0, fontSize: 24 }}>Create your desktop pet</h1>
+        <h1 style={{ margin: 0, fontSize: 24 }}>创建你的桌面宠物</h1>
         <button
           onClick={() => setShowSettings(true)}
           disabled={generationBusy}
-          title="Settings"
+          title="设置"
           style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 8, padding: '6px 10px', cursor: generationBusy ? 'not-allowed' : 'pointer', color: '#718096', fontSize: 18, lineHeight: 1, opacity: generationBusy ? 0.5 : 1 }}
         >
           ⚙️
         </button>
       </div>
-      <p style={{ color: '#718096', marginBottom: 32 }}>Turn a reference image into a living desktop companion.</p>
+      <p style={{ color: '#718096', marginBottom: 32 }}>将参考图片变成活生生的桌面伴侣。</p>
 
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 40, overflowX: 'auto' }}>
         {currentSteps.map((currentStep, index) => (
@@ -162,13 +162,13 @@ export default function CreatorWindow() {
       {savedPet ? (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <div style={{ fontSize: 56, marginBottom: 16 }}>🎉</div>
-          <h2 style={{ marginBottom: 8 }}>{savedPet.name} is ready!</h2>
-          <p style={{ color: '#718096' }}>Your pet was saved and is available from the system tray.</p>
+          <h2 style={{ marginBottom: 8 }}>{savedPet.name} 已就绪！</h2>
+          <p style={{ color: '#718096' }}>宠物已保存，可从系统托盘访问。</p>
           <button
             onClick={reset}
             style={{ marginTop: 16, padding: '10px 24px', borderRadius: 8, border: 'none', background: '#4f8ef7', color: '#fff', cursor: 'pointer', fontSize: 15 }}
           >
-            Create another
+            再创建一个
           </button>
         </div>
       ) : (

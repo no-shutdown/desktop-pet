@@ -23,30 +23,30 @@ export interface AppSettings {
 }
 
 export const ANTHROPIC_MODELS = [
-  { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (most capable)' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (balanced)' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
+  { value: 'claude-opus-4-7', label: 'Claude Opus 4.7（最强）' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6（均衡）' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5（快速）' },
 ];
 
 export const DEEPSEEK_MODELS = [
   { value: 'deepseek-vl2', label: 'DeepSeek-VL2' },
-  { value: 'deepseek-vl2-tiny', label: 'DeepSeek-VL2 Tiny (fast)' },
+  { value: 'deepseek-vl2-tiny', label: 'DeepSeek-VL2 Tiny（快速）' },
 ];
 
 export const KIMI_MODELS = [
-  { value: 'moonshot-v1-8k-vision-preview', label: 'Moonshot 8K Vision' },
-  { value: 'moonshot-v1-32k-vision-preview', label: 'Moonshot 32K Vision' },
+  { value: 'moonshot-v1-8k-vision-preview', label: 'Moonshot 8K 视觉' },
+  { value: 'moonshot-v1-32k-vision-preview', label: 'Moonshot 32K 视觉' },
 ];
 
 export const SILICONFLOW_BASE_MODELS = [
-  { value: 'Tongyi-MAI/Z-Image-Turbo', label: 'Z-Image-Turbo (Base)' },
-  { value: 'Tongyi-MAI/Z-Image', label: 'Z-Image (Base)' },
-  { value: 'baidu/ERNIE-Image-Turbo', label: 'ERNIE-Image-Turbo (Base)' },
+  { value: 'Tongyi-MAI/Z-Image-Turbo', label: 'Z-Image-Turbo（基础）' },
+  { value: 'Tongyi-MAI/Z-Image', label: 'Z-Image（基础）' },
+  { value: 'baidu/ERNIE-Image-Turbo', label: 'ERNIE-Image-Turbo（基础）' },
 ] as const;
 
 export const SILICONFLOW_REFERENCE_MODELS = [
-  { value: 'Qwen/Qwen-Image-Edit-2509', label: 'Qwen-Image-Edit-2509 (img2img)' },
-  { value: 'Kwai-Kolors/Kolors', label: 'Kolors (img2img)' },
+  { value: 'Qwen/Qwen-Image-Edit-2509', label: 'Qwen-Image-Edit-2509（图生图）' },
+  { value: 'Kwai-Kolors/Kolors', label: 'Kolors（图生图）' },
 ] as const;
 
 /**
@@ -176,6 +176,6 @@ export function saveSettings(settings: AppSettings): void {
 export const VISION_PROVIDER_LABELS: Record<VisionProvider, string> = {
   anthropic: 'Anthropic (Claude)',
   deepseek: 'DeepSeek',
-  kimi: 'Kimi (Moonshot)',
-  skip: 'Skip',
+  kimi: 'Kimi（月之暗面）',
+  skip: '跳过',
 };

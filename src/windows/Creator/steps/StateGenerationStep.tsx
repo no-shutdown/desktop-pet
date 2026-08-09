@@ -47,8 +47,8 @@ interface StateGenerationStepProps {
 type Status = 'idle' | 'generating' | 'assembling' | 'error' | 'ready';
 
 const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[] = [
-  { value: 'siliconflow', label: 'SiliconFlow', desc: 'Hosted image generation' },
-  { value: 'localsd', label: 'Local Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
+  { value: 'siliconflow', label: '硅基流动 SiliconFlow', desc: '云端图像生成' },
+  { value: 'localsd', label: '本地 Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
 ];
 
 function supportedProvider(provider: ImageProvider): GenerationProvider {
@@ -202,7 +202,7 @@ export default function StateGenerationStep({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={{ background: '#f7fafc', borderRadius: 10, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          State row generation
+          生成动画状态行
         </p>
         {IMAGE_OPTIONS.map(({ value, label, desc }) => (
           <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
@@ -225,16 +225,16 @@ export default function StateGenerationStep({
           <>
             <input
               type="password"
-              aria-label="Image API key"
+              aria-label="图像 API Key"
               value={settings.imageApiKey}
               onChange={(event) => updateSettings({ imageApiKey: event.target.value })}
-              placeholder="Image API key"
+              placeholder="图像 API Key"
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
             />
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
-              Reference model
+              参考模型
               <select
-                aria-label="Reference model"
+                aria-label="参考模型"
                 value={settings.imageReferenceModel}
                 onChange={(event) => updateSettings({ imageReferenceModel: event.target.value })}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
@@ -250,7 +250,7 @@ export default function StateGenerationStep({
         {provider === 'localsd' && (
           <input
             type="text"
-            aria-label="Local Stable Diffusion URL"
+            aria-label="本地 Stable Diffusion 地址"
             value={settings.localSdUrl}
             onChange={(event) => updateSettings({ localSdUrl: event.target.value })}
             placeholder="http://localhost:7860"
@@ -282,12 +282,12 @@ export default function StateGenerationStep({
                   />
                 ) : (
                   <span style={{ color: failed ? '#e53e3e' : '#a0aec0', fontSize: 12 }}>
-                    {failed ? 'failed' : 'pending'}
+                    {failed ? '失败' : '待生成'}
                   </span>
                 )}
               </div>
               <span style={{ fontSize: 12, color: failed ? '#e53e3e' : '#4a5568' }}>
-                {state}: {row ? 'complete' : failed ? 'failed' : 'pending'}
+                {state}：{row ? '已完成' : failed ? '失败' : '待生成'}
               </span>
             </div>
           );
@@ -295,9 +295,9 @@ export default function StateGenerationStep({
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-        {busy && <p style={{ color: '#4a5568', margin: 0 }}>{activeState ? `Generating ${activeState}…` : 'Assembling preview…'}</p>}
-        <p style={{ color: '#718096', margin: 0 }}>Progress: {progress.current} / {progress.total}</p>
-        {completedCount > 0 && !busy && <p style={{ color: '#38a169', margin: 0 }}>{completedCount} of 4 state rows complete.</p>}
+        {busy && <p style={{ color: '#4a5568', margin: 0 }}>{activeState ? `正在生成 ${activeState}…` : '正在组合预览图…'}</p>}
+        <p style={{ color: '#718096', margin: 0 }}>进度：{progress.current} / {progress.total}</p>
+        {completedCount > 0 && !busy && <p style={{ color: '#38a169', margin: 0 }}>{completedCount} / 4 状态行已完成。</p>}
         {errorMsg && <p role="alert" style={{ color: '#e53e3e', margin: 0, whiteSpace: 'pre-wrap' }}>{errorMsg}</p>}
       </div>
 
@@ -307,7 +307,7 @@ export default function StateGenerationStep({
           disabled={busy}
           style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: busy ? 'not-allowed' : 'pointer' }}
         >
-          Back to Base
+          返回基础图像
         </button>
 
         {failedState ? (
@@ -316,7 +316,7 @@ export default function StateGenerationStep({
             disabled={busy}
             style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: busy ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer' }}
           >
-            Retry {failedState}
+            重试 {failedState}
           </button>
         ) : (
           <button
@@ -324,7 +324,7 @@ export default function StateGenerationStep({
             disabled={busy || status === 'ready'}
             style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: busy || status === 'ready' ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: busy || status === 'ready' ? 'not-allowed' : 'pointer' }}
           >
-            {status === 'error' ? 'Retry generation' : 'Generate all states'}
+            {status === 'error' ? '重新生成' : '生成所有状态'}
           </button>
         )}
       </div>
