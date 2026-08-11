@@ -22,8 +22,8 @@ pub fn build_row_prompt(
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
 
     format!(
-        "The attached canonical base image is a reference sheet showing 8 identical copies of the same character for {description}, laid out left-to-right in 8 equal-width slots on a flat {chroma_name} chroma background ({chroma_hex}). Replace each of the 8 copies' pose so together they form a single loopable animation cycle, while keeping every other visual property unchanged. Output an image that is exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on the same flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any visible column border, divider, grid, gap, or highlight between columns. All 8 characters share identical scale and feet aligned to a single shared horizontal ground line at the same vertical position in every frame; do not shift the baseline between frames beyond the small breathing amount required by the animation. Preserve identity exactly: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged across all 8 frames; only the pose changes. FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. State action: {}. State requirements: {}. {}. {}",
-        state.facing, state.action, state.requirements, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
+        "Create an 8-frame sprite animation cycle of {description} performing this action: {}. Requirements: {}. The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size — REPLACE each column with a distinct animation frame; do not preserve the reference pose in any column. Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. The 8 columns MUST show 8 visibly DIFFERENT frames of the same continuous motion — each column is a distinct moment in the animation cycle so that frame 1 → frame 8 loops smoothly back to frame 1; do NOT output 8 identical or near-identical poses. Keep the motion SMALL and CONTINUOUS: between any two neighbouring columns the pose changes by only a small increment of the action (no big jumps between neighbour frames), so the loop plays smoothly rather than as a slideshow of extreme poses. Every frame is shot from the SAME fixed camera at the SAME zoom — the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames aside from the small in-place motion the action requires; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames beyond the small motion the action requires. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged; only the pose changes to advance the animation. FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
+        state.action, state.requirements, state.facing, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
     )
 }
 
@@ -123,8 +123,11 @@ mod tests {
         );
 
         for term in [
-            "attached canonical base image",
-            "8 identical copies",
+            "8-frame sprite animation cycle",
+            "attached reference sheet",
+            "8 tiled copies",
+            "replace each column",
+            "distinct animation frame",
             "left-to-right",
             "flat cyan chroma background",
             "#00FFFF",
@@ -134,6 +137,9 @@ mod tests {
             "8:1 aspect ratio",
             "8 equal-width columns of 256 pixels each",
             "horizontally centered inside its column",
+            "8 visibly different frames",
+            "distinct moment",
+            "loops smoothly",
             "shared horizontal ground line",
             "identical scale",
             "facing direction lock",

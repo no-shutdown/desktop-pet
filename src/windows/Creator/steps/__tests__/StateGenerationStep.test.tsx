@@ -37,6 +37,11 @@ vi.mock('../../../../lib/settings', () => ({
     { value: 'reference-model', label: 'Reference model' },
   ],
 }));
+vi.mock('../../../Pet/SpriteAnimator', () => ({
+  default: (props: { sheetSrc: string }) => (
+    <div data-testid="sprite-animator" data-src={props.sheetSrc} />
+  ),
+}));
 
 import StateGenerationStep from '../StateGenerationStep';
 
@@ -60,6 +65,15 @@ describe('StateGenerationStep', () => {
     };
   }
 
+  const assembled = {
+    runId: 'run-1',
+    dataUrl: 'data:image/png;base64,combined',
+    frameW: 128,
+    frameH: 128,
+    frameCount: 8,
+    rowGap: 0,
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     progressHandler = undefined;
@@ -70,27 +84,19 @@ describe('StateGenerationStep', () => {
     mockInvoke.mockResolvedValue(row('idle'));
   });
 
-  it('generates idle, walking, waving, and working sequentially, then assembles', async () => {
+  it('generates all four states, assembles a preview, and stays on the page until the user confirms', async () => {
     mockInvoke.mockImplementation(async (command: string, args: { state?: string }) => {
       if (command === 'generate_state_row') return row(args.state!);
-      if (command === 'assemble_run_preview') {
-        return {
-          runId: 'run-1',
-          dataUrl: 'data:image/png;base64,combined',
-          frameW: 128,
-          frameH: 128,
-          frameCount: 8,
-          rowGap: 0,
-        };
-      }
+      if (command === 'assemble_run_preview') return assembled;
       throw new Error(`unexpected command: ${command}`);
     });
 
     const onNext = vi.fn();
     render(<StateGenerationStep {...defaultProps} onNext={onNext} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Generate all states' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
 
-    await waitFor(() => expect(onNext).toHaveBeenCalledOnce());
+    const confirmButton = await screen.findByRole('button', { name: '下一步' });
+    expect(onNext).not.toHaveBeenCalled();
 
     const rowCalls = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
@@ -105,6 +111,8 @@ describe('StateGenerationStep', () => {
       && args.denoisingStrength === 0.55
     ))).toBe(true);
     expect(mockInvoke).toHaveBeenLastCalledWith('assemble_run_preview', { runId: 'run-1' });
+
+    fireEvent.click(confirmButton);
     expect(onNext).toHaveBeenCalledWith('data:image/png;base64,combined', {
       petId: 'run-1',
       runId: 'run-1',
@@ -117,9 +125,6 @@ describe('StateGenerationStep', () => {
       wavingFrames: 8,
       workingFrames: 8,
     });
-    expect(mockInvoke.mock.calls.every(([name]) => (
-      name === 'generate_state_row' || name === 'assemble_run_preview'
-    ))).toBe(true);
   });
 
   it('reports state generation busy while the row command is pending', async () => {
@@ -131,19 +136,12 @@ describe('StateGenerationStep', () => {
         return new Promise((resolve) => { resolveFirstRow = resolve; });
       }
       if (command === 'generate_state_row') return Promise.resolve(row(args.state!));
-      return Promise.resolve({
-        runId: 'run-1',
-        dataUrl: 'data:image/png;base64,combined',
-        frameW: 128,
-        frameH: 128,
-        frameCount: 8,
-        rowGap: 0,
-      });
+      return Promise.resolve(assembled);
     });
     const onBusyChange = vi.fn();
     render(<StateGenerationStep {...defaultProps} onBusyChange={onBusyChange} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate all states' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
 
     await waitFor(() => expect(onBusyChange).toHaveBeenCalledWith(true));
     resolveFirstRow(row('idle'));
@@ -159,36 +157,29 @@ describe('StateGenerationStep', () => {
         return new Promise((resolve) => { resolveFirstRow = resolve; });
       }
       if (command === 'generate_state_row') return Promise.resolve(row(args.state!));
-      return Promise.resolve({
-        runId: 'run-1',
-        dataUrl: 'data:image/png;base64,combined',
-        frameW: 128,
-        frameH: 128,
-        frameCount: 8,
-        rowGap: 0,
-      });
+      return Promise.resolve(assembled);
     });
 
     render(<StateGenerationStep {...defaultProps} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Generate all states' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
     await waitFor(() => expect(progressHandler).toBeDefined());
-    expect(screen.getByText('Progress: 0 / 4')).toBeTruthy();
+    expect(screen.getByText('进度：0 / 4')).toBeTruthy();
 
     act(() => progressHandler!({
       payload: { runId: 'other-run', phase: 'state', state: 'walking', current: 4, total: 4 },
     }));
-    expect(screen.queryByText('Progress: 4 / 4')).toBeNull();
+    expect(screen.queryByText('进度：4 / 4')).toBeNull();
 
     act(() => progressHandler!({
       payload: { runId: 'run-1', phase: 'state', state: 'idle', current: 1, total: 4 },
     }));
-    expect(screen.getByText('Progress: 1 / 4')).toBeTruthy();
+    expect(screen.getByText('进度：1 / 4')).toBeTruthy();
 
     resolveFirstRow(row('idle'));
     await waitFor(() => expect(mockInvoke).toHaveBeenLastCalledWith('assemble_run_preview', { runId: 'run-1' }));
   });
 
-  it('retries only the failed state and preserves completed rows', async () => {
+  it('marks a failed state and lets the user regenerate only that state via its per-state button', async () => {
     let walkingAttempts = 0;
     mockInvoke.mockImplementation(async (command: string, args: { state?: string }) => {
       if (command === 'generate_state_row') {
@@ -197,36 +188,59 @@ describe('StateGenerationStep', () => {
         }
         return row(args.state!);
       }
-      if (command === 'assemble_run_preview') {
-        return {
-          runId: 'run-1',
-          dataUrl: 'data:image/png;base64,combined',
-          frameW: 128,
-          frameH: 128,
-          frameCount: 8,
-          rowGap: 0,
-        };
-      }
+      if (command === 'assemble_run_preview') return assembled;
       throw new Error(`unexpected command: ${command}`);
     });
 
     const onNext = vi.fn();
     render(<StateGenerationStep {...defaultProps} onNext={onNext} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Generate all states' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
 
     expect(await screen.findByText('walking failed')).toBeTruthy();
-    expect(screen.getByText('idle: complete')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Retry walking' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Retry idle' })).toBeNull();
+    expect(screen.getByText('待机：已完成')).toBeTruthy();
+    expect(screen.getByText('走路：失败')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Retry walking' }));
-    await waitFor(() => expect(onNext).toHaveBeenCalledOnce());
+    // Only idle completed and walking failed. Per-state 🔄 button is available for both.
+    expect(screen.getByRole('button', { name: '重新生成 待机' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重新生成 走路' })).toBeTruthy();
+
+    // Regenerate just walking (second attempt succeeds); waving/working stay pending.
+    fireEvent.click(screen.getByRole('button', { name: '重新生成 走路' }));
+    await screen.findByText('走路：已完成');
+    expect(screen.queryByRole('button', { name: '下一步' })).toBeNull();
+
+    // Fill the remaining two via the bulk button.
+    fireEvent.click(screen.getByRole('button', { name: /生成剩余/ }));
+    await screen.findByRole('button', { name: '下一步' });
 
     const states = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
       .map(([, args]) => (args as { state: string }).state);
     expect(states).toEqual(['idle', 'walking', 'walking', 'waving', 'working']);
-    expect(mockInvoke.mock.calls.some(([name]) => name === 'generate_and_assemble')).toBe(false);
-    expect(mockInvoke.mock.calls.some(([name]) => name === 'pollinations')).toBe(false);
+    expect(onNext).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }));
+    expect(onNext).toHaveBeenCalledOnce();
+  });
+
+  it('opens an animation preview when a completed state cell is clicked', async () => {
+    mockInvoke.mockImplementation(async (command: string, args: { state?: string }) => {
+      if (command === 'generate_state_row') return row(args.state!);
+      if (command === 'assemble_run_preview') return assembled;
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<StateGenerationStep {...defaultProps} />);
+    fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
+    await screen.findByRole('button', { name: '下一步' });
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 待机 动画预览' }));
+
+    expect(await screen.findByText('待机 动画预览')).toBeTruthy();
+    const animator = screen.getByTestId('sprite-animator');
+    expect(animator.getAttribute('data-src')).toBe('data:image/png;base64,idle');
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    await waitFor(() => expect(screen.queryByText('待机 动画预览')).toBeNull());
   });
 });

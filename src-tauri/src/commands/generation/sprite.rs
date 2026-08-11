@@ -202,8 +202,8 @@ fn sample_border_color(image: &RgbaImage) -> Option<[u8; 3]> {
 /// only pixels connected to the border that are close to that sampled colour,
 /// so interior character pixels sharing a similar hue are always protected.
 pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
-    const FILL_THRESHOLD: f32 = 80.0;
-    const RAMP_WIDTH: f32 = 20.0;
+    const FILL_THRESHOLD: f32 = 110.0;
+    const RAMP_WIDTH: f32 = 30.0;
     let ramp_end = FILL_THRESHOLD + RAMP_WIDTH;
     let width = image.width();
     let height = image.height();
@@ -212,15 +212,13 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
         return;
     }
 
-    // Use the sampled border colour so off-hue AI backgrounds are still caught.
-    // Fall back to the ideal key only if the border sample looks nothing like it.
-    let actual_bg = match sample_border_color(image) {
-        Some(sampled) => {
-            let dist = (squared_rgb_distance(sampled, key.rgb) as f32).sqrt();
-            if dist < 200.0 { sampled } else { key.rgb }
-        }
-        None => key.rgb,
-    };
+    // Trust the sampled border colour unconditionally: AI models routinely
+    // ignore the prompted chroma-key hue and produce off-hue (white / plain /
+    // natural) backgrounds instead, and matching the ideal key would then
+    // remove nothing. BFS from the edges still protects any interior pixel not
+    // connected to the border, so a character colour that happens to be near
+    // the sampled background is preserved unless it touches the frame edge.
+    let actual_bg = sample_border_color(image).unwrap_or(key.rgb);
 
     let mut processed = vec![false; (width * height) as usize];
     let mut queue: VecDeque<(u32, u32)> = VecDeque::new();
