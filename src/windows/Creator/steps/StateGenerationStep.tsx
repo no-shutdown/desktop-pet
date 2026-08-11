@@ -3,9 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { PET_STATES, PET_STATE_CATALOG, PET_STATE_LABELS, type PetState } from '../../../types/pet';
 import {
+  apiKeyForProvider,
   loadSettings,
+  rowModelForProvider,
   saveSettings,
   SILICONFLOW_REFERENCE_MODELS,
+  WANXIANG_EDIT_MODELS,
+  type AppSettings,
   type ImageProvider,
 } from '../../../lib/settings';
 import SpriteAnimator from '../../Pet/SpriteAnimator';
@@ -49,6 +53,7 @@ type Status = 'idle' | 'generating' | 'assembling' | 'error' | 'ready';
 
 const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[] = [
   { value: 'siliconflow', label: '硅基流动 SiliconFlow', desc: '云端图像生成' },
+  { value: 'wanxiang', label: '阿里云万相', desc: 'DashScope wanx 图像编辑' },
   { value: 'localsd', label: '本地 Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
 ];
 
@@ -61,7 +66,25 @@ const STATE_DELAY_MS: Record<PetState, number> = PET_STATE_CATALOG.reduce(
 );
 
 function supportedProvider(provider: ImageProvider): GenerationProvider {
-  return provider === 'localsd' ? 'localsd' : 'siliconflow';
+  if (provider === 'localsd') return 'localsd';
+  if (provider === 'wanxiang') return 'wanxiang';
+  return 'siliconflow';
+}
+
+function apiKeyPatchForProvider(
+  provider: GenerationProvider,
+  value: string,
+): Partial<AppSettings> {
+  return provider === 'wanxiang' ? { wanxiangApiKey: value } : { imageApiKey: value };
+}
+
+function rowModelPatchForProvider(
+  provider: GenerationProvider,
+  value: string,
+): Partial<AppSettings> {
+  return provider === 'wanxiang'
+    ? { wanxiangEditModel: value }
+    : { imageReferenceModel: value };
 }
 
 function messageFromError(error: unknown): string {
@@ -77,7 +100,7 @@ function buildGeneratedConfig(runId: string): GeneratedSpriteConfig {
     rowGap: 0,
     layout: 'horizontalRows',
     idleFrames: 8,
-    walkingFrames: 8,
+    sleepingFrames: 8,
     wavingFrames: 8,
     workingFrames: 8,
   };
@@ -169,12 +192,13 @@ export default function StateGenerationStep({
   }
 
   function generationArgs(state: PetState) {
+    const providerChoice = settings.rowImageProvider ?? settings.imageProvider;
     return {
       runId,
       state,
-      imageProvider: supportedProvider(settings.imageProvider),
-      imageApiKey: settings.imageApiKey || null,
-      referenceModel: settings.imageReferenceModel || null,
+      imageProvider: supportedProvider(providerChoice),
+      imageApiKey: apiKeyForProvider(settings, providerChoice) || null,
+      referenceModel: rowModelForProvider(settings, providerChoice) || null,
       localSdUrl: settings.localSdUrl || null,
       denoisingStrength: settings.localSdDenoisingStrength,
     };
@@ -272,7 +296,7 @@ export default function StateGenerationStep({
     onNext(assembledPreview.dataUrl, buildGeneratedConfig(runId));
   }
 
-  const provider = supportedProvider(settings.imageProvider);
+  const provider = supportedProvider(settings.rowImageProvider ?? settings.imageProvider);
   const busy = status === 'generating' || status === 'assembling';
   const completedCount = PET_STATES.filter((state) => completedRows[state]).length;
   const allComplete = completedCount === 4;
@@ -296,7 +320,7 @@ export default function StateGenerationStep({
               name="imageProvider"
               value={value}
               checked={provider === value}
-              onChange={() => updateSettings({ imageProvider: value })}
+              onChange={() => updateSettings({ rowImageProvider: value })}
               style={{ marginTop: 3, accentColor: '#4f8ef7' }}
             />
             <div>
@@ -310,21 +334,47 @@ export default function StateGenerationStep({
           <>
             <input
               type="password"
-              aria-label="图像 API Key"
+              aria-label="SiliconFlow API Key"
               value={settings.imageApiKey}
-              onChange={(event) => updateSettings({ imageApiKey: event.target.value })}
-              placeholder="图像 API Key"
+              onChange={(event) => updateSettings(apiKeyPatchForProvider(provider, event.target.value))}
+              placeholder="SiliconFlow API Key"
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
             />
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
               参考模型
               <select
-                aria-label="参考模型"
+                aria-label="SiliconFlow 参考模型"
                 value={settings.imageReferenceModel}
-                onChange={(event) => updateSettings({ imageReferenceModel: event.target.value })}
+                onChange={(event) => updateSettings(rowModelPatchForProvider(provider, event.target.value))}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
               >
                 {SILICONFLOW_REFERENCE_MODELS.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+
+        {provider === 'wanxiang' && (
+          <>
+            <input
+              type="password"
+              aria-label="万相 API Key"
+              value={settings.wanxiangApiKey}
+              onChange={(event) => updateSettings(apiKeyPatchForProvider(provider, event.target.value))}
+              placeholder="DashScope API Key（sk-…）"
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
+            />
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
+              图像编辑模型
+              <select
+                aria-label="万相图像编辑模型"
+                value={settings.wanxiangEditModel}
+                onChange={(event) => updateSettings(rowModelPatchForProvider(provider, event.target.value))}
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
+              >
+                {WANXIANG_EDIT_MODELS.map(({ value, label }) => (
                   <option key={value} value={value}>{label}</option>
                 ))}
               </select>

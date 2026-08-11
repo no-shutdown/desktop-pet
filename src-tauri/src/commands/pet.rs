@@ -22,7 +22,7 @@ fn read_selected_pngs(
     run_id: &str,
 ) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
     let selected_dir = run_dir(app_data_dir, run_id)?.join("selected");
-    ["idle", "walking", "waving", "working"]
+    ["idle", "sleeping", "waving", "working"]
         .into_iter()
         .map(|state| {
             let path = selected_dir.join(format!("{state}.png"));
@@ -152,7 +152,7 @@ mod tests {
 
     fn make_pet(id: &str) -> Pet {
         let mut states = HashMap::new();
-        for s in &["idle", "walking", "waving", "working"] {
+        for s in &["idle", "sleeping", "waving", "working"] {
             states.insert(s.to_string(), SpriteStateInfo {
                 cols: 2, rows: 2, frame_count: 4, frame_w: 128, frame_h: 128, delay_ms: 200,
             });
@@ -174,7 +174,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(frame)
             .write_to(&mut bytes, ImageFormat::Png)
             .unwrap();
-        for state in ["idle", "walking", "waving", "working"] {
+        for state in ["idle", "sleeping", "waving", "working"] {
             fs::write(selected_dir.join(format!("{state}.png")), bytes.get_ref()).unwrap();
         }
     }
@@ -227,7 +227,7 @@ mod tests {
 
         let pet_dir = temp.path().join("pets/pet-001");
         assert!(pet_dir.join("pet.json").is_file());
-        for state in ["idle", "walking", "waving", "working"] {
+        for state in ["idle", "sleeping", "waving", "working"] {
             assert!(pet_dir.join(format!("{state}.png")).is_file());
         }
         assert_eq!(read_pets_from_dir(&temp.path().join("pets")).unwrap(), vec![pet]);

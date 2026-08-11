@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn row_prompt_references_the_canonical_base_and_has_fixed_layout_contract() {
-        let state = state_definition("walking").unwrap();
+        let state = state_definition("sleeping").unwrap();
         let prompt = build_row_prompt(
             "a tiny orange fox with a blue scarf",
             "#00FFFF",
@@ -143,7 +143,7 @@ mod tests {
             "shared horizontal ground line",
             "identical scale",
             "facing direction lock",
-            "facing right",
+            "front view",
             "never mirror, flip, or reverse",
             "no cropped limbs",
             "preserve identity",

@@ -28,8 +28,9 @@ use self::run::{
     mark_state_complete as complete_state, mark_state_generating as begin_state,
 };
 use self::sprite::{
-    assemble_rows, build_row_reference, choose_chroma_key, chroma_key_from_hex, image_to_data_url,
-    normalize_base_image, normalize_horizontal_row, validate_sprite_row, ChromaKey,
+    assemble_rows, build_row_reference, choose_chroma_key, chroma_key_from_hex,
+    ensure_wanxiang_reference_size, image_to_data_url, normalize_base_image,
+    normalize_horizontal_row, validate_sprite_row, ChromaKey,
 };
 use self::types::{
     state_definition, state_definitions, ArtifactStatus, GenerationRunManifest, ProviderConfig,
@@ -80,7 +81,7 @@ fn provider_name(provider: &str) -> Result<String, String> {
         return Err("image provider is required".to_string());
     }
     match provider {
-        "siliconflow" | "localsd" | "local_sd" => Ok(provider.to_string()),
+        "siliconflow" | "wanxiang" | "localsd" | "local_sd" => Ok(provider.to_string()),
         _ => Err(format!("unsupported image provider: {provider}")),
     }
 }
@@ -440,9 +441,9 @@ pub async fn generate_state_row(
     let state_definition = validate_state_name(&state)?;
     let provider = provider_name(&image_provider)?;
     let manifest = load_run_manifest(&data_dir, &run_id)?;
-    if manifest.provider != provider {
-        return Err("generation run provider cannot be changed during a retry".to_string());
-    }
+    // Rows may use a different provider than the base (e.g. base via Wanxiang, rows via
+    // SiliconFlow) — do not enforce a provider match here. The base's provider stays
+    // locked to whatever created the base.png.
     require_base_complete(&manifest)?;
     let selected_key = chroma_key_for_manifest(&manifest)?;
     let base_path = run_dir(&data_dir, &run_id)?.join("base.png");
@@ -450,7 +451,13 @@ pub async fn generate_state_row(
     if base.dimensions() != (API_FRAME_W, API_FRAME_H) {
         return Err("canonical base image has invalid dimensions".to_string());
     }
-    let row_reference_data_url = image_to_data_url(&build_row_reference(&base))?;
+    let row_reference = build_row_reference(&base);
+    let row_reference_sized = if provider == "wanxiang" {
+        ensure_wanxiang_reference_size(&row_reference, &selected_key)
+    } else {
+        row_reference
+    };
+    let row_reference_data_url = image_to_data_url(&row_reference_sized)?;
     begin_state(&data_dir, &run_id, &state)?;
 
     let prompt = build_row_prompt(
@@ -530,7 +537,7 @@ pub async fn save_combined_sprite_sheet(
     frame_h: u32,
     row_gap: u32,
     idle_frames: u32,
-    walking_frames: u32,
+    sleeping_frames: u32,
     waving_frames: u32,
     working_frames: u32,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
@@ -544,7 +551,7 @@ pub async fn save_combined_sprite_sheet(
     let pet_dir = pet_dir_at(&data_dir, &pet_id)?;
     let rows: [(&str, u32, u32); 4] = [
         ("idle", idle_frames, 150),
-        ("walking", walking_frames, 100),
+        ("sleeping", sleeping_frames, 200),
         ("waving", waving_frames, 110),
         ("working", working_frames, 120),
     ];
@@ -591,7 +598,7 @@ fn write_frame_selections_to_dir(
     col_gap: u32,
     row_gap: u32,
     idle_cells: &[FrameCell],
-    walking_cells: &[FrameCell],
+    sleeping_cells: &[FrameCell],
     waving_cells: &[FrameCell],
     working_cells: &[FrameCell],
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
@@ -600,7 +607,7 @@ fn write_frame_selections_to_dir(
     let rgba = image.to_rgba8();
     let state_entries: [(&str, &[FrameCell], u32); 4] = [
         ("idle", idle_cells, 150),
-        ("walking", walking_cells, 100),
+        ("sleeping", sleeping_cells, 200),
         ("waving", waving_cells, 110),
         ("working", working_cells, 120),
     ];
@@ -667,7 +674,7 @@ pub(crate) fn stage_frame_selections_at(
     col_gap: u32,
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
-    walking_cells: Vec<FrameCell>,
+    sleeping_cells: Vec<FrameCell>,
     waving_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
@@ -680,7 +687,7 @@ pub(crate) fn stage_frame_selections_at(
         col_gap,
         row_gap,
         &idle_cells,
-        &walking_cells,
+        &sleeping_cells,
         &waving_cells,
         &working_cells,
     )
@@ -696,7 +703,7 @@ pub async fn stage_frame_selections(
     col_gap: u32,
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
-    walking_cells: Vec<FrameCell>,
+    sleeping_cells: Vec<FrameCell>,
     waving_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
@@ -713,7 +720,7 @@ pub async fn stage_frame_selections(
         col_gap,
         row_gap,
         idle_cells,
-        walking_cells,
+        sleeping_cells,
         waving_cells,
         working_cells,
     )
@@ -729,7 +736,7 @@ pub async fn save_frame_selections(
     col_gap: u32,
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
-    walking_cells: Vec<FrameCell>,
+    sleeping_cells: Vec<FrameCell>,
     waving_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
@@ -746,7 +753,7 @@ pub async fn save_frame_selections(
         col_gap,
         row_gap,
         &idle_cells,
-        &walking_cells,
+        &sleeping_cells,
         &waving_cells,
         &working_cells,
     )
@@ -757,7 +764,10 @@ mod command_tests {
     use super::run::create_run_at;
     use super::run_dir;
     use super::sprite::CHROMA_KEY_CANDIDATES;
-    use super::types::{state_definitions, ArtifactStatus, GenerationRunManifest};
+    use super::types::{
+        state_definitions, ArtifactStatus, GenerationRunManifest, DEFAULT_FRAME_COUNT, FRAME_H,
+        FRAME_W,
+    };
     use super::{
         assemble_preview_rows, assemble_run_preview_at, chroma_key_for_manifest,
         finish_base_result_at, finish_state_result_at, generation_progress_payload,
@@ -779,17 +789,20 @@ mod command_tests {
     }
 
     fn opaque_row(color: [u8; 4]) -> RgbaImage {
-        RgbaImage::from_pixel(1024, 128, Rgba(color))
+        RgbaImage::from_pixel(FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H, Rgba(color))
     }
 
     fn keyed_row(key: super::sprite::ChromaKey) -> RgbaImage {
-        // A raw AI-style row: 8 chroma-keyed columns each with a small solid
-        // character blob. Blobs are large enough (16×64) that per-frame slicing
-        // will preserve visible pixels in every output frame.
-        let mut row =
-            RgbaImage::from_pixel(1024, 128, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
-        for frame in 0..8u32 {
-            let x_start = frame * 128 + 56;
+        // A raw AI-style row: DEFAULT_FRAME_COUNT chroma-keyed columns each with
+        // a small solid character blob. Blobs are large enough (16×64) that
+        // per-frame slicing preserves visible pixels in every output frame.
+        let mut row = RgbaImage::from_pixel(
+            FRAME_W * DEFAULT_FRAME_COUNT,
+            FRAME_H,
+            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+        );
+        for frame in 0..DEFAULT_FRAME_COUNT {
+            let x_start = frame * FRAME_W + 56;
             for x in x_start..(x_start + 16) {
                 for y in 32..96 {
                     row.put_pixel(x, y, Rgba([20, 30, 40, 255]));
@@ -846,18 +859,21 @@ mod command_tests {
     #[test]
     fn preview_assembly_keeps_catalog_order_and_zero_row_gap() {
         let rows = vec![
-            RgbaImage::from_pixel(1024, 128, Rgba([255, 0, 0, 255])),
-            RgbaImage::from_pixel(1024, 128, Rgba([0, 255, 0, 255])),
-            RgbaImage::from_pixel(1024, 128, Rgba([0, 0, 255, 255])),
-            RgbaImage::from_pixel(1024, 128, Rgba([255, 255, 0, 255])),
+            opaque_row([255, 0, 0, 255]),
+            opaque_row([0, 255, 0, 255]),
+            opaque_row([0, 0, 255, 255]),
+            opaque_row([255, 255, 0, 255]),
         ];
 
         let preview = assemble_preview_rows(&rows).unwrap();
 
-        assert_eq!(preview.dimensions(), (1024, 512));
+        assert_eq!(
+            preview.dimensions(),
+            (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H * 4)
+        );
         assert_eq!(preview.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert_eq!(preview.get_pixel(0, 128).0, [0, 255, 0, 255]);
-        assert_eq!(preview.get_pixel(0, 384).0, [255, 255, 0, 255]);
+        assert_eq!(preview.get_pixel(0, FRAME_H).0, [0, 255, 0, 255]);
+        assert_eq!(preview.get_pixel(0, FRAME_H * 3).0, [255, 255, 0, 255]);
     }
 
     #[test]
@@ -882,7 +898,7 @@ mod command_tests {
         .unwrap();
 
         assert_eq!(result["idle"].frame_count, 1);
-        for state in ["idle", "walking", "waving", "working"] {
+        for state in ["idle", "sleeping", "waving", "working"] {
             assert!(
                 run_dir(temp.path(), "manual-run")
                     .unwrap()
@@ -937,21 +953,21 @@ mod command_tests {
         super::mark_base_complete(temp.path(), "run-1").unwrap();
         super::mark_state_generating(temp.path(), "run-1", "idle").unwrap();
         super::mark_state_complete(temp.path(), "run-1", "idle").unwrap();
-        super::mark_state_generating(temp.path(), "run-1", "walking").unwrap();
+        super::mark_state_generating(temp.path(), "run-1", "sleeping").unwrap();
 
         finish_state_result_at(
             temp.path(),
             "run-1",
-            "walking",
+            "sleeping",
             &CHROMA_KEY_CANDIDATES[0],
-            Err("walking provider failed".to_string()),
+            Err("sleeping provider failed".to_string()),
             None,
         )
         .unwrap_err();
 
         let manifest = super::load_manifest(temp.path(), "run-1").unwrap();
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Complete);
-        assert_eq!(manifest.states["walking"].status, ArtifactStatus::Failed);
+        assert_eq!(manifest.states["sleeping"].status, ArtifactStatus::Failed);
         assert!(!temp.path().join("pets").exists());
     }
 
@@ -977,12 +993,12 @@ mod command_tests {
         )
         .unwrap();
 
-        assert_eq!(row.dimensions(), (1024, 128));
+        assert_eq!(row.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
         assert_eq!(row.get_pixel(0, 0)[3], 0);
-        for frame in 0..8u32 {
-            let start_x = frame * 128;
-            let has_visible = (start_x..start_x + 128)
-                .any(|x| (0..128).any(|y| row.get_pixel(x, y)[3] > 0));
+        for frame in 0..DEFAULT_FRAME_COUNT {
+            let start_x = frame * FRAME_W;
+            let has_visible = (start_x..start_x + FRAME_W)
+                .any(|x| (0..FRAME_H).any(|y| row.get_pixel(x, y)[3] > 0));
             assert!(has_visible, "frame {frame} lost its character after slicing");
         }
         assert!(run_dir(temp.path(), "run-1")
@@ -1020,21 +1036,21 @@ mod command_tests {
             .unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
 
-        assert_eq!(preview.frame_w, 128);
-        assert_eq!(preview.frame_h, 128);
-        assert_eq!(preview.frame_count, 8);
+        assert_eq!(preview.frame_w, FRAME_W);
+        assert_eq!(preview.frame_h, FRAME_H);
+        assert_eq!(preview.frame_count, DEFAULT_FRAME_COUNT);
         assert_eq!(preview.row_gap, 0);
-        assert_eq!(image.dimensions(), (1024, 512));
+        assert_eq!(image.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H * 4));
         assert!(!temp.path().join("pets").exists());
     }
 
     #[test]
     fn progress_payload_contains_run_phase_state_and_counters() {
-        let payload = generation_progress_payload("run-1", "state", Some("walking"), 1, 1);
+        let payload = generation_progress_payload("run-1", "state", Some("sleeping"), 1, 1);
 
         assert_eq!(payload["runId"], "run-1");
         assert_eq!(payload["phase"], "state");
-        assert_eq!(payload["state"], "walking");
+        assert_eq!(payload["state"], "sleeping");
         assert_eq!(payload["current"], 1);
         assert_eq!(payload["total"], 1);
     }

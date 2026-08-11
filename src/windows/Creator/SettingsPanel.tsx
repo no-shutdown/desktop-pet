@@ -3,6 +3,7 @@ import {
   loadSettings, saveSettings,
   getVisionModels, defaultVisionModel,
   SILICONFLOW_BASE_MODELS, SILICONFLOW_REFERENCE_MODELS,
+  WANXIANG_BASE_MODELS, WANXIANG_EDIT_MODELS,
   LOCAL_SD_DENOISING_MIN, LOCAL_SD_DENOISING_MAX,
   normalizeDenoisingStrength,
   type AppSettings, type VisionProvider, type ImageProvider,
@@ -21,6 +22,7 @@ const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] =
 
 const IMAGE_OPTIONS: { value: Exclude<ImageProvider, 'pollinations'>; label: string; desc: string }[] = [
   { value: 'siliconflow',  label: '硅基流动 SiliconFlow',   desc: '有免费额度，siliconflow.cn' },
+  { value: 'wanxiang',     label: '阿里云万相',              desc: 'DashScope wanx 系列（异步任务）' },
   { value: 'localsd',      label: '本地 Stable Diffusion',  desc: 'AUTOMATIC1111 WebUI' },
 ];
 
@@ -55,8 +57,13 @@ export default function SettingsPanel({ onBack }: SettingsPanelProps) {
 
   const visionModels = getVisionModels(settings.visionProvider);
   const needsVisionKey = settings.visionProvider !== 'skip';
-  const needsImageKey  = settings.imageProvider === 'siliconflow';
-  const needsSdUrl     = settings.imageProvider === 'localsd';
+  const activeProviders = new Set<ImageProvider>([
+    settings.imageProvider,
+    settings.rowImageProvider,
+  ]);
+  const needsSiliconflow = activeProviders.has('siliconflow');
+  const needsWanxiang = activeProviders.has('wanxiang');
+  const needsSdUrl = activeProviders.has('localsd');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -139,30 +146,50 @@ export default function SettingsPanel({ onBack }: SettingsPanelProps) {
             图像生成服务
           </h3>
           <p style={{ fontSize: 12, color: '#a0aec0', margin: '0 0 16px' }}>
-            步骤 3 中用于生成全部 18 帧动画图像。
+            步骤 3 生成 1 张基础图，步骤 4 生成 4 行动画（可用不同 provider）。
           </p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
-            {IMAGE_OPTIONS.map(({ value, label, desc }) => (
-              <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-                <input
-                  type="radio"
-                  name="imageProvider"
-                  value={value}
-                  checked={settings.imageProvider === value}
-                  onChange={() => update({ imageProvider: value })}
-                  style={{ marginTop: 3, accentColor: '#4f8ef7' }}
-                />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#2d3748' }}>{label}</div>
-                  <div style={{ fontSize: 11, color: '#a0aec0' }}>{desc}</div>
-                </div>
-              </label>
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+            <label style={{ ...labelStyle, fontWeight: 600 }}>基础图 provider（步骤 3）</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {IMAGE_OPTIONS.map(({ value, label }) => (
+                <label key={value} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="baseImageProvider"
+                    value={value}
+                    checked={settings.imageProvider === value}
+                    onChange={() => update({ imageProvider: value })}
+                    style={{ accentColor: '#4f8ef7' }}
+                  />
+                  <span style={{ fontSize: 13, color: '#2d3748' }}>{label}</span>
+                </label>
+              ))}
+            </div>
           </div>
 
-          {needsImageKey && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 20 }}>
+            <label style={{ ...labelStyle, fontWeight: 600 }}>动画行 provider（步骤 4）</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {IMAGE_OPTIONS.map(({ value, label }) => (
+                <label key={value} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="rowImageProvider"
+                    value={value}
+                    checked={settings.rowImageProvider === value}
+                    onChange={() => update({ rowImageProvider: value })}
+                    style={{ accentColor: '#4f8ef7' }}
+                  />
+                  <span style={{ fontSize: 13, color: '#2d3748' }}>{label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {needsSiliconflow && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px', background: '#fff', borderRadius: 8, marginBottom: 12, border: '1px solid #e2e8f0' }}>
+              <label style={{ ...labelStyle, fontWeight: 600, margin: 0 }}>SiliconFlow</label>
               <div>
                 <label style={labelStyle}>API Key</label>
                 <input
@@ -204,8 +231,53 @@ export default function SettingsPanel({ onBack }: SettingsPanelProps) {
             </div>
           )}
 
+          {needsWanxiang && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px', background: '#fff', borderRadius: 8, marginBottom: 12, border: '1px solid #e2e8f0' }}>
+              <label style={{ ...labelStyle, fontWeight: 600, margin: 0 }}>阿里云万相 / DashScope</label>
+              <div>
+                <label style={labelStyle}>API Key</label>
+                <input
+                  type="password"
+                  value={settings.wanxiangApiKey}
+                  onChange={(e) => update({ wanxiangApiKey: e.target.value })}
+                  placeholder="DashScope API Key（sk-…）"
+                  style={fieldStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle} htmlFor="wanxiang-base-model">Base 模型（文生图）</label>
+                <select
+                  id="wanxiang-base-model"
+                  aria-label="Wanxiang base model"
+                  value={settings.wanxiangBaseModel}
+                  onChange={(e) => update({ wanxiangBaseModel: e.target.value })}
+                  style={selectStyle}
+                >
+                  {WANXIANG_BASE_MODELS.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle} htmlFor="wanxiang-edit-model">图像编辑模型</label>
+                <select
+                  id="wanxiang-edit-model"
+                  aria-label="Wanxiang edit model"
+                  value={settings.wanxiangEditModel}
+                  onChange={(e) => update({ wanxiangEditModel: e.target.value })}
+                  style={selectStyle}
+                >
+                  {WANXIANG_EDIT_MODELS.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
           {needsSdUrl && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '12px 14px', background: '#fff', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+              <label style={{ ...labelStyle, fontWeight: 600, margin: 0 }}>Local Stable Diffusion</label>
               <div>
                 <label style={labelStyle} htmlFor="local-sd-url">WebUI 地址</label>
                 <input

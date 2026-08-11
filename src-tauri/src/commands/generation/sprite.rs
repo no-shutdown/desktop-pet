@@ -405,6 +405,54 @@ fn find_segment_x_bounds(
     found.then_some((xi_min, xi_max))
 }
 
+/// Wanxiang / DashScope image-edit models require each input dimension to be in
+/// the range 512..=4096 pixels. Two strategies handle the shape mismatch:
+///
+///   * If a uniform integer upscale can hit MIN on the short side without
+///     blowing past MAX on the long side, upscale (nearest-neighbour keeps
+///     tiled art crisp).
+///   * Otherwise pad the short side with a solid chroma-key background so the
+///     reference reaches MIN without stretching the tiled characters. The row
+///     slicer downstream ignores the padding via `find_visible_bounds`.
+pub fn ensure_wanxiang_reference_size(image: &RgbaImage, key: &ChromaKey) -> RgbaImage {
+    const MIN_DIM: u32 = 512;
+    const MAX_DIM: u32 = 4096;
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return image.clone();
+    }
+
+    let min_dim = width.min(height);
+    if min_dim < MIN_DIM {
+        let scale = (MIN_DIM + min_dim - 1) / min_dim;
+        let scaled_w = width.saturating_mul(scale);
+        let scaled_h = height.saturating_mul(scale);
+        if scaled_w <= MAX_DIM && scaled_h <= MAX_DIM {
+            return DynamicImage::ImageRgba8(image.clone())
+                .resize_exact(scaled_w, scaled_h, FilterType::Nearest)
+                .to_rgba8();
+        }
+    } else if width <= MAX_DIM && height <= MAX_DIM {
+        return image.clone();
+    }
+
+    let target_w = width.max(MIN_DIM).min(MAX_DIM);
+    let target_h = height.max(MIN_DIM).min(MAX_DIM);
+    if width > target_w || height > target_h {
+        // Source already exceeds MAX on some axis — nothing we can do without
+        // cropping. Return unchanged and let wanxiang surface the exact error.
+        return image.clone();
+    }
+
+    let background = Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]);
+    let mut padded = RgbaImage::from_pixel(target_w, target_h, background);
+    let offset_x = ((target_w - width) / 2) as i64;
+    let offset_y = ((target_h - height) / 2) as i64;
+    image::imageops::overlay(&mut padded, image, offset_x, offset_y);
+    padded
+}
+
 pub fn build_row_reference(base: &RgbaImage) -> RgbaImage {
     // Base is already at API_FRAME_W × API_FRAME_H after normalize_base_image;
     // just tile it 8 times side-by-side, no upscaling.
@@ -638,7 +686,11 @@ mod tests {
     #[test]
     fn crops_vertical_letterboxing_before_normalizing_a_wide_row() {
         let key = CHROMA_KEY_CANDIDATES[0];
-        let mut source = RgbaImage::from_pixel(2048, 1024, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+        let mut source = RgbaImage::from_pixel(
+            API_FRAME_W * DEFAULT_FRAME_COUNT,
+            1024,
+            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+        );
         for frame_index in 0..DEFAULT_FRAME_COUNT {
             for x in (frame_index * 256 + 64)..(frame_index * 256 + 192) {
                 for y in 384..640 {
@@ -713,12 +765,14 @@ mod tests {
 
     #[test]
     fn rejects_wrong_dimensions_and_accepts_a_valid_nonempty_row() {
-        let wrong_width = RgbaImage::from_pixel(1023, 128, Rgba([1, 2, 3, 255]));
+        let wrong_width =
+            RgbaImage::from_pixel(FRAME_W * DEFAULT_FRAME_COUNT - 1, FRAME_H, Rgba([1, 2, 3, 255]));
         let valid = opaque_row([1, 2, 3, 255]);
 
-        let error = validate_sprite_row(&wrong_width, 128, 128, 8).unwrap_err();
+        let error = validate_sprite_row(&wrong_width, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT)
+            .unwrap_err();
         assert!(error.contains("dimensions"));
-        validate_sprite_row(&valid, 128, 128, 8).unwrap();
+        validate_sprite_row(&valid, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
     }
 
     #[test]
@@ -755,10 +809,13 @@ mod tests {
 
         let combined = assemble_rows(&rows, FRAME_W, FRAME_H).unwrap();
 
-        assert_eq!(combined.dimensions(), (1024, 512));
+        assert_eq!(
+            combined.dimensions(),
+            (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H * 4)
+        );
         assert_eq!(combined.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert_eq!(combined.get_pixel(0, 128).0, [0, 255, 0, 255]);
-        assert_eq!(combined.get_pixel(0, 384).0, [255, 255, 0, 255]);
+        assert_eq!(combined.get_pixel(0, FRAME_H).0, [0, 255, 0, 255]);
+        assert_eq!(combined.get_pixel(0, FRAME_H * 3).0, [255, 255, 0, 255]);
     }
 
     #[test]
@@ -771,7 +828,7 @@ mod tests {
             opaque_row([1, 2, 3, 255]),
             opaque_row([1, 2, 3, 255]),
             opaque_row([1, 2, 3, 255]),
-            RgbaImage::from_pixel(1023, FRAME_H, Rgba([1, 2, 3, 255])),
+            RgbaImage::from_pixel(FRAME_W * DEFAULT_FRAME_COUNT - 1, FRAME_H, Rgba([1, 2, 3, 255])),
         ];
         let error = assemble_rows(&rows, FRAME_W, FRAME_H).unwrap_err();
         assert!(error.contains("dimensions"));
@@ -799,8 +856,8 @@ mod tests {
         // them; the new algorithm should re-center each one in its output frame.
         let key = CHROMA_KEY_CANDIDATES[0];
         let mut source = RgbaImage::from_pixel(
-            2048,
-            256,
+            API_FRAME_W * DEFAULT_FRAME_COUNT,
+            API_FRAME_H,
             Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
         );
         for frame_index in 0..DEFAULT_FRAME_COUNT {
@@ -834,8 +891,8 @@ mod tests {
         // line — the bottom-most opaque pixel of every frame must match.
         let key = CHROMA_KEY_CANDIDATES[0];
         let mut source = RgbaImage::from_pixel(
-            2048,
-            256,
+            API_FRAME_W * DEFAULT_FRAME_COUNT,
+            API_FRAME_H,
             Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
         );
         for frame_index in 0..DEFAULT_FRAME_COUNT {

@@ -4,20 +4,32 @@ export type VisionProvider = 'anthropic' | 'deepseek' | 'kimi' | 'skip';
  * `pollinations` is retained only so older callers can deserialize their
  * settings. `loadSettings` and the settings UI normalize it to SiliconFlow.
  */
-export type ImageProvider = 'pollinations' | 'siliconflow' | 'localsd';
+export type ImageProvider = 'pollinations' | 'siliconflow' | 'wanxiang' | 'localsd';
 
-export const IMAGE_PROVIDERS = ['siliconflow', 'localsd'] as const;
+export const IMAGE_PROVIDERS = ['siliconflow', 'wanxiang', 'localsd'] as const;
 
 export interface AppSettings {
   visionProvider: VisionProvider;
   visionApiKey: string;
   visionModel: string;
+  /** Provider used to generate the canonical base image (step 3). */
   imageProvider: ImageProvider;
+  /** Provider used to generate each state row (step 4). Falls back to imageProvider if unset. */
+  rowImageProvider: ImageProvider;
+  /** SiliconFlow API key. Historical field name; also referred to as the "image" API key. */
   imageApiKey: string;
   /** Legacy compatibility field; kept in sync with imageBaseModel. */
   imageModel: string;
+  /** SiliconFlow base model (text-to-image). */
   imageBaseModel: string;
+  /** SiliconFlow reference / image-edit model. */
   imageReferenceModel: string;
+  /** DashScope (Aliyun Wanxiang) API key. */
+  wanxiangApiKey: string;
+  /** Wanxiang text-to-image model. */
+  wanxiangBaseModel: string;
+  /** Wanxiang image-edit model (reference-based row generation). */
+  wanxiangEditModel: string;
   localSdUrl: string;
   localSdDenoisingStrength: number;
 }
@@ -47,6 +59,31 @@ export const SILICONFLOW_BASE_MODELS = [
 export const SILICONFLOW_REFERENCE_MODELS = [
   { value: 'Qwen/Qwen-Image-Edit-2509', label: 'Qwen-Image-Edit-2509（图生图）' },
   { value: 'Kwai-Kolors/Kolors', label: 'Kolors（图生图）' },
+] as const;
+
+/**
+ * Wanxiang text-to-image models available on DashScope.
+ * `wan2.*` models use the newer /image-generation/generation endpoint with a
+ * chat-style messages body; `wanx*` models use the legacy /text2image endpoint.
+ */
+export const WANXIANG_BASE_MODELS = [
+  { value: 'wan2.7-image', label: 'wan2.7-image（新版，通用）' },
+  { value: 'wan2.7-image-pro', label: 'wan2.7-image-pro（新版专业，支持 4K）' },
+  { value: 'wan2.6-image', label: 'wan2.6-image（新版）' },
+  { value: 'wanx2.1-t2i-turbo', label: 'wanx2.1-t2i-turbo（旧版快速）' },
+  { value: 'wanx2.1-t2i-plus', label: 'wanx2.1-t2i-plus（旧版高质量）' },
+  { value: 'wanx-v1', label: 'wanx-v1（旧版）' },
+] as const;
+
+/**
+ * Wanxiang image-edit models. `wan2.*` models handle both generation and
+ * editing via the same endpoint; `wanx2.1-imageedit` is the legacy edit model.
+ */
+export const WANXIANG_EDIT_MODELS = [
+  { value: 'wan2.7-image', label: 'wan2.7-image（新版编辑）' },
+  { value: 'wan2.7-image-pro', label: 'wan2.7-image-pro（新版专业编辑）' },
+  { value: 'wan2.6-image', label: 'wan2.6-image（新版编辑）' },
+  { value: 'wanx2.1-imageedit', label: 'wanx2.1-imageedit（旧版）' },
 ] as const;
 
 /**
@@ -108,7 +145,8 @@ function isVisionProvider(value: unknown): value is VisionProvider {
 }
 
 function normalizeImageProvider(value: unknown): ImageProvider {
-  return value === 'localsd' ? 'localsd' : 'siliconflow';
+  if (value === 'localsd' || value === 'wanxiang') return value;
+  return 'siliconflow';
 }
 
 const STORAGE_KEY = 'desktop-pet-settings';
@@ -118,10 +156,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   visionApiKey: '',
   visionModel: 'claude-opus-4-7',
   imageProvider: 'siliconflow',
+  rowImageProvider: 'siliconflow',
   imageApiKey: '',
   imageModel: 'Tongyi-MAI/Z-Image-Turbo',
   imageBaseModel: 'Tongyi-MAI/Z-Image-Turbo',
   imageReferenceModel: 'Qwen/Qwen-Image-Edit-2509',
+  wanxiangApiKey: '',
+  wanxiangBaseModel: 'wan2.7-image',
+  wanxiangEditModel: 'wan2.7-image',
   localSdUrl: 'http://localhost:7860',
   localSdDenoisingStrength: DEFAULT_LOCAL_SD_DENOISING_STRENGTH,
 };
@@ -134,6 +176,10 @@ export function normalizeSettings(raw: unknown): AppSettings {
     ?? DEFAULT_SETTINGS.imageBaseModel;
   const imageReferenceModel = nonEmptyString(stored.imageReferenceModel)
     ?? DEFAULT_SETTINGS.imageReferenceModel;
+  const imageProvider = normalizeImageProvider(stored.imageProvider);
+  const rowImageProvider = stored.rowImageProvider !== undefined
+    ? normalizeImageProvider(stored.rowImageProvider)
+    : imageProvider;
 
   return {
     ...DEFAULT_SETTINGS,
@@ -142,11 +188,15 @@ export function normalizeSettings(raw: unknown): AppSettings {
       : DEFAULT_SETTINGS.visionProvider,
     visionApiKey: nonEmptyString(stored.visionApiKey) ?? '',
     visionModel: nonEmptyString(stored.visionModel) ?? DEFAULT_SETTINGS.visionModel,
-    imageProvider: normalizeImageProvider(stored.imageProvider),
+    imageProvider,
+    rowImageProvider,
     imageApiKey: nonEmptyString(stored.imageApiKey) ?? '',
     imageModel: imageBaseModel,
     imageBaseModel,
     imageReferenceModel,
+    wanxiangApiKey: nonEmptyString(stored.wanxiangApiKey) ?? '',
+    wanxiangBaseModel: nonEmptyString(stored.wanxiangBaseModel) ?? DEFAULT_SETTINGS.wanxiangBaseModel,
+    wanxiangEditModel: nonEmptyString(stored.wanxiangEditModel) ?? DEFAULT_SETTINGS.wanxiangEditModel,
     localSdUrl: nonEmptyString(stored.localSdUrl) ?? DEFAULT_SETTINGS.localSdUrl,
     localSdDenoisingStrength: normalizeDenoisingStrength(stored.localSdDenoisingStrength),
   };
@@ -179,3 +229,43 @@ export const VISION_PROVIDER_LABELS: Record<VisionProvider, string> = {
   kimi: 'Kimi（月之暗面）',
   skip: '跳过',
 };
+
+/**
+ * Given a provider and settings, return the API key that provider needs.
+ * LocalSD uses a URL instead of a key and returns an empty string.
+ */
+export function apiKeyForProvider(settings: AppSettings, provider: ImageProvider): string {
+  switch (provider) {
+    case 'wanxiang': return settings.wanxiangApiKey;
+    case 'localsd': return '';
+    case 'pollinations':
+    case 'siliconflow':
+    default: return settings.imageApiKey;
+  }
+}
+
+/**
+ * Given a provider and settings, return that provider's base (text-to-image) model.
+ */
+export function baseModelForProvider(settings: AppSettings, provider: ImageProvider): string {
+  switch (provider) {
+    case 'wanxiang': return settings.wanxiangBaseModel;
+    case 'localsd': return '';
+    case 'pollinations':
+    case 'siliconflow':
+    default: return settings.imageBaseModel;
+  }
+}
+
+/**
+ * Given a provider and settings, return that provider's row / reference-edit model.
+ */
+export function rowModelForProvider(settings: AppSettings, provider: ImageProvider): string {
+  switch (provider) {
+    case 'wanxiang': return settings.wanxiangEditModel;
+    case 'localsd': return '';
+    case 'pollinations':
+    case 'siliconflow':
+    default: return settings.imageReferenceModel;
+  }
+}

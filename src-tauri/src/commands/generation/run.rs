@@ -411,22 +411,22 @@ mod tests {
         let manifest = mark_state_generating(temp.path(), "run-1", "idle").unwrap();
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Generating);
         assert_eq!(manifest.states["idle"].attempts, 1);
-        assert_eq!(manifest.states["walking"].attempts, 0);
+        assert_eq!(manifest.states["sleeping"].attempts, 0);
 
         mark_state_complete(temp.path(), "run-1", "idle").unwrap();
-        let manifest = mark_state_generating(temp.path(), "run-1", "walking").unwrap();
+        let manifest = mark_state_generating(temp.path(), "run-1", "sleeping").unwrap();
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Complete);
         assert_eq!(manifest.states["idle"].attempts, 1);
         assert_eq!(
-            manifest.states["walking"].status,
+            manifest.states["sleeping"].status,
             ArtifactStatus::Generating
         );
-        assert_eq!(manifest.states["walking"].attempts, 1);
+        assert_eq!(manifest.states["sleeping"].attempts, 1);
 
-        let manifest = mark_failed(temp.path(), "run-1", "walking", "row failed").unwrap();
-        assert_eq!(manifest.states["walking"].status, ArtifactStatus::Failed);
+        let manifest = mark_failed(temp.path(), "run-1", "sleeping", "row failed").unwrap();
+        assert_eq!(manifest.states["sleeping"].status, ArtifactStatus::Failed);
         assert_eq!(
-            manifest.states["walking"].error.as_deref(),
+            manifest.states["sleeping"].error.as_deref(),
             Some("row failed")
         );
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Complete);
@@ -440,13 +440,13 @@ mod tests {
         mark_base_complete(temp.path(), "run-1").unwrap();
         mark_state_generating(temp.path(), "run-1", "idle").unwrap();
         mark_state_complete(temp.path(), "run-1", "idle").unwrap();
-        mark_state_generating(temp.path(), "run-1", "walking").unwrap();
-        mark_state_complete(temp.path(), "run-1", "walking").unwrap();
+        mark_state_generating(temp.path(), "run-1", "sleeping").unwrap();
+        mark_state_complete(temp.path(), "run-1", "sleeping").unwrap();
 
         let run = run_dir(temp.path(), "run-1").unwrap();
         fs::write(run.join("base.png"), b"old base").unwrap();
         fs::write(run.join("rows/idle.png"), b"old idle").unwrap();
-        fs::write(run.join("rows/walking.png"), b"old walking").unwrap();
+        fs::write(run.join("rows/sleeping.png"), b"old sleeping").unwrap();
         let pets = temp.path().join("pets").join("existing-pet");
         fs::create_dir_all(&pets).unwrap();
         fs::write(pets.join("idle.png"), b"pet data").unwrap();
@@ -455,7 +455,7 @@ mod tests {
 
         assert_eq!(manifest.base.status, ArtifactStatus::Generating);
         assert_eq!(manifest.base.attempts, 2);
-        for state in ["idle", "walking", "waving", "working"] {
+        for state in ["idle", "sleeping", "waving", "working"] {
             assert_eq!(manifest.states[state].status, ArtifactStatus::Pending);
             assert_eq!(manifest.states[state].attempts, 0);
             assert!(!run.join(format!("rows/{state}.png")).exists());
@@ -472,12 +472,12 @@ mod tests {
         mark_base_complete(temp.path(), "run-1").unwrap();
         mark_state_generating(temp.path(), "run-1", "idle").unwrap();
         mark_state_complete(temp.path(), "run-1", "idle").unwrap();
-        mark_state_generating(temp.path(), "run-1", "walking").unwrap();
-        mark_state_complete(temp.path(), "run-1", "walking").unwrap();
+        mark_state_generating(temp.path(), "run-1", "sleeping").unwrap();
+        mark_state_complete(temp.path(), "run-1", "sleeping").unwrap();
 
         let run = run_dir(temp.path(), "run-1").unwrap();
         fs::write(run.join("rows/idle.png"), b"old idle").unwrap();
-        fs::write(run.join("rows/walking.png"), b"completed walking").unwrap();
+        fs::write(run.join("rows/sleeping.png"), b"completed sleeping").unwrap();
 
         let manifest = mark_state_generating(temp.path(), "run-1", "idle").unwrap();
 
@@ -485,12 +485,12 @@ mod tests {
         assert_eq!(manifest.base.attempts, 1);
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Generating);
         assert_eq!(manifest.states["idle"].attempts, 2);
-        assert_eq!(manifest.states["walking"].status, ArtifactStatus::Complete);
-        assert_eq!(manifest.states["walking"].attempts, 1);
+        assert_eq!(manifest.states["sleeping"].status, ArtifactStatus::Complete);
+        assert_eq!(manifest.states["sleeping"].attempts, 1);
         assert!(!run.join("rows/idle.png").exists());
         assert_eq!(
-            fs::read(run.join("rows/walking.png")).unwrap(),
-            b"completed walking"
+            fs::read(run.join("rows/sleeping.png")).unwrap(),
+            b"completed sleeping"
         );
     }
 

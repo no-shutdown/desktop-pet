@@ -25,16 +25,29 @@ vi.mock('../../../../lib/settings', () => ({
     visionApiKey: '',
     visionModel: '',
     imageProvider: 'siliconflow',
+    rowImageProvider: 'siliconflow',
     imageApiKey: 'image-api-key',
     imageModel: 'legacy-model',
     imageBaseModel: 'base-model',
     imageReferenceModel: 'reference-model',
+    wanxiangApiKey: '',
+    wanxiangBaseModel: 'wanx2.1-t2i-turbo',
+    wanxiangEditModel: 'wanx2.1-imageedit',
     localSdUrl: 'http://localhost:7860',
     localSdDenoisingStrength: 0.55,
   }),
   saveSettings: mockSaveSettings,
+  apiKeyForProvider: (settings: { imageApiKey: string; wanxiangApiKey: string }, provider: string) =>
+    provider === 'wanxiang' ? settings.wanxiangApiKey : settings.imageApiKey,
+  rowModelForProvider: (
+    settings: { imageReferenceModel: string; wanxiangEditModel: string },
+    provider: string,
+  ) => (provider === 'wanxiang' ? settings.wanxiangEditModel : settings.imageReferenceModel),
   SILICONFLOW_REFERENCE_MODELS: [
     { value: 'reference-model', label: 'Reference model' },
+  ],
+  WANXIANG_EDIT_MODELS: [
+    { value: 'wanx2.1-imageedit', label: 'wanx2.1-imageedit' },
   ],
 }));
 vi.mock('../../../Pet/SpriteAnimator', () => ({
@@ -101,7 +114,7 @@ describe('StateGenerationStep', () => {
     const rowCalls = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
       .map(([, args]) => args as { state: string; runId: string });
-    expect(rowCalls.map(({ state }) => state)).toEqual(['idle', 'walking', 'waving', 'working']);
+    expect(rowCalls.map(({ state }) => state)).toEqual(['idle', 'sleeping', 'waving', 'working']);
     expect(rowCalls.every(({ runId }) => runId === 'run-1')).toBe(true);
     expect(mockInvoke.mock.calls.filter(([name]) => name === 'generate_state_row').every(([, args]) => (
       args.imageProvider === 'siliconflow'
@@ -121,7 +134,7 @@ describe('StateGenerationStep', () => {
       rowGap: 0,
       layout: 'horizontalRows',
       idleFrames: 8,
-      walkingFrames: 8,
+      sleepingFrames: 8,
       wavingFrames: 8,
       workingFrames: 8,
     });
@@ -166,7 +179,7 @@ describe('StateGenerationStep', () => {
     expect(screen.getByText('进度：0 / 4')).toBeTruthy();
 
     act(() => progressHandler!({
-      payload: { runId: 'other-run', phase: 'state', state: 'walking', current: 4, total: 4 },
+      payload: { runId: 'other-run', phase: 'state', state: 'sleeping', current: 4, total: 4 },
     }));
     expect(screen.queryByText('进度：4 / 4')).toBeNull();
 
@@ -180,11 +193,11 @@ describe('StateGenerationStep', () => {
   });
 
   it('marks a failed state and lets the user regenerate only that state via its per-state button', async () => {
-    let walkingAttempts = 0;
+    let sleepingAttempts = 0;
     mockInvoke.mockImplementation(async (command: string, args: { state?: string }) => {
       if (command === 'generate_state_row') {
-        if (args.state === 'walking' && walkingAttempts++ === 0) {
-          throw new Error('walking failed');
+        if (args.state === 'sleeping' && sleepingAttempts++ === 0) {
+          throw new Error('sleeping failed');
         }
         return row(args.state!);
       }
@@ -196,17 +209,17 @@ describe('StateGenerationStep', () => {
     render(<StateGenerationStep {...defaultProps} onNext={onNext} />);
     fireEvent.click(screen.getByRole('button', { name: '生成所有状态' }));
 
-    expect(await screen.findByText('walking failed')).toBeTruthy();
+    expect(await screen.findByText('sleeping failed')).toBeTruthy();
     expect(screen.getByText('待机：已完成')).toBeTruthy();
-    expect(screen.getByText('走路：失败')).toBeTruthy();
+    expect(screen.getByText('睡觉：失败')).toBeTruthy();
 
-    // Only idle completed and walking failed. Per-state 🔄 button is available for both.
+    // Only idle completed and sleeping failed. Per-state 🔄 button is available for both.
     expect(screen.getByRole('button', { name: '重新生成 待机' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '重新生成 走路' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重新生成 睡觉' })).toBeTruthy();
 
-    // Regenerate just walking (second attempt succeeds); waving/working stay pending.
-    fireEvent.click(screen.getByRole('button', { name: '重新生成 走路' }));
-    await screen.findByText('走路：已完成');
+    // Regenerate just sleeping (second attempt succeeds); waving/working stay pending.
+    fireEvent.click(screen.getByRole('button', { name: '重新生成 睡觉' }));
+    await screen.findByText('睡觉：已完成');
     expect(screen.queryByRole('button', { name: '下一步' })).toBeNull();
 
     // Fill the remaining two via the bulk button.
@@ -216,7 +229,7 @@ describe('StateGenerationStep', () => {
     const states = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
       .map(([, args]) => (args as { state: string }).state);
-    expect(states).toEqual(['idle', 'walking', 'walking', 'waving', 'working']);
+    expect(states).toEqual(['idle', 'sleeping', 'sleeping', 'waving', 'working']);
     expect(onNext).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '下一步' }));

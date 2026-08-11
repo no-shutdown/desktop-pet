@@ -121,10 +121,38 @@ describe('settings defaults and migration', () => {
 });
 
 describe('image generation settings contract', () => {
-  it('exposes only SiliconFlow and Local SD providers', () => {
-    expect(IMAGE_PROVIDERS).toEqual(['siliconflow', 'localsd']);
+  it('exposes SiliconFlow, Wanxiang, and Local SD providers', () => {
+    expect(IMAGE_PROVIDERS).toEqual(['siliconflow', 'wanxiang', 'localsd']);
     expect(SILICONFLOW_BASE_MODELS.map(({ value }) => value)).toContain('Tongyi-MAI/Z-Image-Turbo');
     expect(SILICONFLOW_REFERENCE_MODELS.map(({ value }) => value)).toContain('Qwen/Qwen-Image-Edit-2509');
+  });
+
+  it('defaults Wanxiang to the current wan2.7-image model for both base and row', () => {
+    const settings = loadSettings();
+    expect(settings.wanxiangBaseModel).toBe('wan2.7-image');
+    expect(settings.wanxiangEditModel).toBe('wan2.7-image');
+    expect(settings.wanxiangApiKey).toBe('');
+    expect(settings.rowImageProvider).toBe('siliconflow');
+  });
+
+  it('mirrors legacy imageProvider into rowImageProvider when the row field is absent', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ imageProvider: 'localsd' }));
+    expect(loadSettings().rowImageProvider).toBe('localsd');
+  });
+
+  it('lets base and row providers diverge once set independently', () => {
+    saveSettings({
+      ...loadSettings(),
+      imageProvider: 'wanxiang',
+      rowImageProvider: 'siliconflow',
+      wanxiangApiKey: 'dashscope-key',
+      imageApiKey: 'sf-key',
+    });
+    const reloaded = loadSettings();
+    expect(reloaded.imageProvider).toBe('wanxiang');
+    expect(reloaded.rowImageProvider).toBe('siliconflow');
+    expect(reloaded.wanxiangApiKey).toBe('dashscope-key');
+    expect(reloaded.imageApiKey).toBe('sf-key');
   });
 
   it('clamps denoising strength to the Local SD safety range', () => {
@@ -147,15 +175,24 @@ describe('SettingsPanel image generation controls', () => {
     localStorage.clear();
   });
 
-  it('renders two provider choices, separate models, and Local SD denoising controls', () => {
+  it('renders separate base/row provider radios and shows Wanxiang + Local SD controls on demand', () => {
     const { container } = render(createElement(SettingsPanel, { onBack: () => {} }));
 
-    expect(container.querySelectorAll('input[name="imageProvider"]')).toHaveLength(2);
+    // Three provider choices for each of base + row groups.
+    expect(container.querySelectorAll('input[name="baseImageProvider"]')).toHaveLength(3);
+    expect(container.querySelectorAll('input[name="rowImageProvider"]')).toHaveLength(3);
     expect(container.querySelector('input[value="pollinations"]')).toBeNull();
     expect(container.querySelector('select[aria-label="Base model"]')).not.toBeNull();
     expect(container.querySelector('select[aria-label="Reference model"]')).not.toBeNull();
 
-    fireEvent.click(container.querySelector('input[value="localsd"]')!);
+    // Base defaults to siliconflow → wanxiang section hidden until user picks it.
+    expect(container.querySelector('select[aria-label="Wanxiang base model"]')).toBeNull();
+
+    fireEvent.click(container.querySelector('input[name="baseImageProvider"][value="wanxiang"]')!);
+    expect(container.querySelector('select[aria-label="Wanxiang base model"]')).not.toBeNull();
+    expect(container.querySelector('select[aria-label="Wanxiang edit model"]')).not.toBeNull();
+
+    fireEvent.click(container.querySelector('input[name="rowImageProvider"][value="localsd"]')!);
 
     const slider = container.querySelector('input[name="localSdDenoisingStrength"]');
     expect(slider).toHaveAttribute('type', 'range');

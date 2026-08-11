@@ -1,6 +1,6 @@
 import type { PetState, SpriteStateInfo } from '../../../types/pet';
 
-export type GenerationProvider = 'siliconflow' | 'localsd';
+export type GenerationProvider = 'siliconflow' | 'wanxiang' | 'localsd';
 export type GenerationPhase = 'base' | 'state' | 'assemble';
 export type GenerationStatus = 'pending' | 'generating' | 'complete' | 'failed';
 
@@ -21,7 +21,7 @@ export interface GeneratedSpriteConfig {
   rowGap: number;
   layout: 'horizontalRows' | 'grid';
   idleFrames: number;
-  walkingFrames: number;
+  sleepingFrames: number;
   wavingFrames: number;
   workingFrames: number;
 }

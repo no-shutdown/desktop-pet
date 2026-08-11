@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
+  apiKeyForProvider,
+  baseModelForProvider,
   loadSettings,
   saveSettings,
   SILICONFLOW_BASE_MODELS,
-  SILICONFLOW_REFERENCE_MODELS,
+  WANXIANG_BASE_MODELS,
+  type AppSettings,
   type ImageProvider,
 } from '../../../lib/settings';
 import type { GenerationProvider } from './types';
@@ -36,6 +39,7 @@ type Status = 'idle' | 'generating' | 'ready' | 'error';
 
 const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[] = [
   { value: 'siliconflow', label: '硅基流动 SiliconFlow', desc: '云端图像生成' },
+  { value: 'wanxiang', label: '阿里云万相', desc: 'DashScope wanx 系列' },
   { value: 'localsd', label: '本地 Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
 ];
 
@@ -47,7 +51,24 @@ function makeRunId(): string {
 }
 
 function supportedProvider(provider: ImageProvider): GenerationProvider {
-  return provider === 'localsd' ? 'localsd' : 'siliconflow';
+  if (provider === 'localsd') return 'localsd';
+  if (provider === 'wanxiang') return 'wanxiang';
+  return 'siliconflow';
+}
+
+function apiKeyPatchForProvider(
+  provider: GenerationProvider,
+  value: string,
+): Partial<AppSettings> {
+  return provider === 'wanxiang' ? { wanxiangApiKey: value } : { imageApiKey: value };
+}
+
+function baseModelPatchForProvider(
+  provider: GenerationProvider,
+  value: string,
+): Partial<AppSettings> {
+  if (provider === 'wanxiang') return { wanxiangBaseModel: value };
+  return { imageBaseModel: value, imageModel: value };
 }
 
 function messageFromError(error: unknown): string {
@@ -130,13 +151,14 @@ export default function GenerateStep({
     setProgress({ current: 0, total: 1 });
 
     try {
+      const activeProvider = supportedProvider(settings.imageProvider);
       const result = await invoke<BasePreviewResult>('generate_base_preview', {
         runId: stableRunId,
         basePrompt: prompt,
         referenceDataUrl: referenceDataUrl || null,
-        imageProvider: supportedProvider(settings.imageProvider),
-        imageApiKey: settings.imageApiKey || null,
-        baseModel: settings.imageBaseModel || null,
+        imageProvider: activeProvider,
+        imageApiKey: apiKeyForProvider(settings, settings.imageProvider) || null,
+        baseModel: baseModelForProvider(settings, settings.imageProvider) || null,
         referenceModel: settings.imageReferenceModel || null,
         localSdUrl: settings.localSdUrl || null,
         denoisingStrength: settings.localSdDenoisingStrength,
@@ -191,21 +213,18 @@ export default function GenerateStep({
           <>
             <input
               type="password"
-              aria-label="图像 API Key"
+              aria-label="SiliconFlow API Key"
               value={settings.imageApiKey}
-              onChange={(event) => updateSettings({ imageApiKey: event.target.value })}
-              placeholder="图像 API Key"
+              onChange={(event) => updateSettings(apiKeyPatchForProvider(provider, event.target.value))}
+              placeholder="SiliconFlow API Key"
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
             />
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
               基础模型
               <select
-                aria-label="基础模型"
+                aria-label="SiliconFlow 基础模型"
                 value={settings.imageBaseModel}
-                onChange={(event) => updateSettings({
-                  imageBaseModel: event.target.value,
-                  imageModel: event.target.value,
-                })}
+                onChange={(event) => updateSettings(baseModelPatchForProvider(provider, event.target.value))}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
               >
                 {SILICONFLOW_BASE_MODELS.map(({ value, label }) => (
@@ -213,15 +232,28 @@ export default function GenerateStep({
                 ))}
               </select>
             </label>
+          </>
+        )}
+
+        {provider === 'wanxiang' && (
+          <>
+            <input
+              type="password"
+              aria-label="万相 API Key"
+              value={settings.wanxiangApiKey}
+              onChange={(event) => updateSettings(apiKeyPatchForProvider(provider, event.target.value))}
+              placeholder="DashScope API Key（sk-…）"
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
+            />
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: '#718096' }}>
-              参考模型
+              基础模型
               <select
-                aria-label="参考模型"
-                value={settings.imageReferenceModel}
-                onChange={(event) => updateSettings({ imageReferenceModel: event.target.value })}
+                aria-label="万相基础模型"
+                value={settings.wanxiangBaseModel}
+                onChange={(event) => updateSettings(baseModelPatchForProvider(provider, event.target.value))}
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff', cursor: 'pointer' }}
               >
-                {SILICONFLOW_REFERENCE_MODELS.map(({ value, label }) => (
+                {WANXIANG_BASE_MODELS.map(({ value, label }) => (
                   <option key={value} value={value}>{label}</option>
                 ))}
               </select>

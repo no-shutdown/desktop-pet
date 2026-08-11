@@ -58,7 +58,7 @@ class MockFileReader {
 
 const EMPTY_STATES: Record<PetState, SpriteStateInfo> = {
   idle: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 150 },
-  walking: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 100 },
+  sleeping: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 100 },
   waving: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 110 },
   working: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 120 },
 };
@@ -82,7 +82,7 @@ function horizontalConfig(frameCount = 8) {
     rowGap: 9,
     layout: 'horizontalRows' as const,
     idleFrames: frameCount,
-    walkingFrames: frameCount,
+    sleepingFrames: frameCount,
     wavingFrames: frameCount,
     workingFrames: frameCount,
   };
@@ -164,7 +164,7 @@ describe('ManualFramePickerStep', () => {
           colGap: 0,
           rowGap: 0,
           idleCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 0 })),
-          walkingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 1 })),
+          sleepingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 1 })),
           wavingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 2 })),
           workingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 3 })),
         }),
@@ -198,7 +198,7 @@ describe('ManualFramePickerStep', () => {
           rowGap: 6,
           layout: 'grid',
           idleFrames: 1,
-          walkingFrames: 1,
+          sleepingFrames: 1,
           wavingFrames: 1,
           workingFrames: 1,
         }}
@@ -250,7 +250,7 @@ describe('ManualFramePickerStep', () => {
         colGap: 4,
         rowGap: 8,
         idleCells: [{ col: 0, row: 0 }],
-        walkingCells: [{ col: 1, row: 0 }],
+        sleepingCells: [{ col: 1, row: 0 }],
         wavingCells: [{ col: 2, row: 0 }],
         workingCells: [{ col: 0, row: 1 }],
       }),
@@ -310,7 +310,7 @@ describe('ManualFramePickerStep', () => {
       expect.objectContaining({
         dataUrl: 'data:image/png;base64,IMAGE_B',
         idleCells: [{ col: 3, row: 0 }],
-        walkingCells: [{ col: 2, row: 0 }],
+        sleepingCells: [{ col: 2, row: 0 }],
         wavingCells: [{ col: 1, row: 0 }],
         workingCells: [{ col: 2, row: 1 }],
       }),

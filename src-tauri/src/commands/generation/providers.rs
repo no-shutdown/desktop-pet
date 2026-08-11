@@ -8,7 +8,21 @@ use std::{
 };
 
 const SILICONFLOW_ENDPOINT: &str = "https://api.siliconflow.cn/v1/images/generations";
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
+const WANXIANG_T2I_ENDPOINT: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
+const WANXIANG_EDIT_ENDPOINT: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis";
+/// Newer wan2.6 / wan2.7 models share a single async image generation endpoint
+/// that accepts both text-to-image and reference-based edit requests.
+const WAN_IMAGE_GENERATION_ENDPOINT: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation";
+const WANXIANG_TASK_ENDPOINT_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks/";
+const WANXIANG_POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// Wanxiang t2i-turbo supports a fixed set of square/rectangular sizes. 1024*1024 is
+/// the closest square that always works; the caller downsamples it back to the
+/// canonical 256×256 base via normalize_base_image.
+const WANXIANG_BASE_SIZE: (u32, u32) = (1024, 1024);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(180);
 const REQUEST_TIMEOUT: Duration = OPERATION_TIMEOUT;
 const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENCODED_IMAGE_BYTES: usize = ((MAX_IMAGE_BYTES + 2) / 3) * 4;
@@ -90,6 +104,96 @@ pub fn local_sd_row_body(
         "init_images": [init_image],
         "denoising_strength": clamp_denoising_strength(denoising_strength),
     })
+}
+
+/// Legacy `wanx*` models (wanx-v1, wanx2.1-t2i-*, wanx2.1-imageedit) use the
+/// old `/text2image` and `/image2image` endpoints with an `input.prompt`
+/// body. Newer `wan2.6-*` / `wan2.7-*` models use the unified
+/// `/image-generation/generation` endpoint with a chat-style messages body.
+pub fn is_new_wan_model(model: &str) -> bool {
+    let model = model.trim();
+    model.starts_with("wan2.") && !model.starts_with("wanx")
+}
+
+pub fn wanxiang_endpoint_for_base(model: &str) -> &'static str {
+    if is_new_wan_model(model) {
+        WAN_IMAGE_GENERATION_ENDPOINT
+    } else {
+        WANXIANG_T2I_ENDPOINT
+    }
+}
+
+pub fn wanxiang_endpoint_for_row(model: &str) -> &'static str {
+    if is_new_wan_model(model) {
+        WAN_IMAGE_GENERATION_ENDPOINT
+    } else {
+        WANXIANG_EDIT_ENDPOINT
+    }
+}
+
+pub fn wanxiang_base_body(model: &str, prompt: &str, width: u32, height: u32) -> Value {
+    if is_new_wan_model(model) {
+        // wan2.6 / wan2.7 chat-style body. `size` accepts shortcuts like "1K"/"2K"
+        // or explicit "WxH" (asterisk); the caller downscales the result anyway.
+        serde_json::json!({
+            "model": model,
+            "input": {
+                "messages": [{
+                    "role": "user",
+                    "content": [{"text": prompt}],
+                }],
+            },
+            "parameters": {
+                "size": format!("{width}*{height}"),
+                "n": 1,
+            },
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "input": {
+                "prompt": prompt,
+            },
+            "parameters": {
+                "size": format!("{width}*{height}"),
+                "n": 1,
+            },
+        })
+    }
+}
+
+pub fn wanxiang_row_body(model: &str, prompt: &str, base_image_data_url: &str) -> Value {
+    if is_new_wan_model(model) {
+        // wan2.* takes reference images inline in the chat content array.
+        // Output aspect follows the reference image dimensions.
+        serde_json::json!({
+            "model": model,
+            "input": {
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"image": base_image_data_url},
+                        {"text": prompt},
+                    ],
+                }],
+            },
+            "parameters": {
+                "n": 1,
+            },
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "input": {
+                "prompt": prompt,
+                "function": "description_edit",
+                "base_image_url": base_image_data_url,
+            },
+            "parameters": {
+                "n": 1,
+            },
+        })
+    }
 }
 
 fn is_valid_image_subtype(value: &str) -> bool {
@@ -539,6 +643,17 @@ fn validate_provider(config: &ProviderConfig) -> Result<(), String> {
                 return Err("SiliconFlow API key is required".to_string());
             }
         }
+        "wanxiang" => {
+            if config
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .is_none()
+            {
+                return Err("Wanxiang API key is required".to_string());
+            }
+        }
         "localsd" | "local_sd" => {
             if config.local_sd_url.trim().is_empty() {
                 return Err("Local SD URL is required".to_string());
@@ -676,6 +791,137 @@ async fn generate_siliconflow(config: &ProviderConfig, body: Value) -> Result<Ve
     }
 }
 
+/// Wan async responses put the image URL in one of two places depending on the
+/// model family:
+///   * legacy `wanx*`  → `output.results[0].url`
+///   * new     `wan2.*` → `output.choices[0].message.content[0].image`
+/// Try both so a single poller handles either.
+fn extract_wanxiang_image_url(payload: &Value) -> Option<String> {
+    if let Some(url) = payload
+        .pointer("/output/results/0/url")
+        .and_then(Value::as_str)
+    {
+        return Some(url.to_string());
+    }
+    let content = payload
+        .pointer("/output/choices/0/message/content")
+        .and_then(Value::as_array)?;
+    for item in content {
+        if let Some(url) = item.get("image").and_then(Value::as_str) {
+            return Some(url.to_string());
+        }
+        if let Some(url) = item.get("url").and_then(Value::as_str) {
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
+async fn submit_wanxiang_task(
+    api_key: &str,
+    endpoint: &str,
+    body: Value,
+) -> Result<String, String> {
+    let client = build_http_client("Wanxiang", Some(api_key))?;
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .header("X-DashScope-Async", "enable")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            bounded_sanitized_error(
+                "Wanxiang request failed",
+                &error.to_string(),
+                Some(api_key),
+            )
+        })?;
+    let payload = parse_json_response(response, "Wanxiang", Some(api_key)).await?;
+    payload
+        .pointer("/output/task_id")
+        .and_then(Value::as_str)
+        .map(|task_id| task_id.to_string())
+        .ok_or_else(|| "Wanxiang: submit response missing task_id".to_string())
+}
+
+fn parse_wanxiang_task_id(value: &str) -> Result<&str, String> {
+    if value.is_empty() {
+        return Err("Wanxiang: task id is empty".to_string());
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err("Wanxiang: task id contains an invalid character".to_string());
+    }
+    Ok(value)
+}
+
+async fn poll_wanxiang_task(api_key: &str, task_id: &str) -> Result<String, String> {
+    let safe_task_id = parse_wanxiang_task_id(task_id)?;
+    let client = build_http_client("Wanxiang", Some(api_key))?;
+    let url = format!("{WANXIANG_TASK_ENDPOINT_PREFIX}{safe_task_id}");
+    loop {
+        let response = client
+            .get(&url)
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .map_err(|error| {
+                bounded_sanitized_error(
+                    "Wanxiang task poll failed",
+                    &error.to_string(),
+                    Some(api_key),
+                )
+            })?;
+        let payload = parse_json_response(response, "Wanxiang", Some(api_key)).await?;
+        let status = payload
+            .pointer("/output/task_status")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match status {
+            "SUCCEEDED" => {
+                let image_url = extract_wanxiang_image_url(&payload).ok_or_else(|| {
+                    "Wanxiang: task succeeded but response is missing an image URL".to_string()
+                })?;
+                return Ok(image_url);
+            }
+            "FAILED" | "CANCELED" | "UNKNOWN" => {
+                let detail = payload
+                    .pointer("/output/message")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.pointer("/output/code").and_then(Value::as_str))
+                    .unwrap_or(status);
+                return Err(bounded_sanitized_error(
+                    &format!("Wanxiang task {status}"),
+                    detail,
+                    Some(api_key),
+                ));
+            }
+            _ => {
+                tokio::time::sleep(WANXIANG_POLL_INTERVAL).await;
+            }
+        }
+    }
+}
+
+async fn generate_wanxiang(
+    config: &ProviderConfig,
+    endpoint: &str,
+    body: Value,
+) -> Result<Vec<u8>, String> {
+    let api_key = config
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "Wanxiang API key is required".to_string())?;
+    let task_id = submit_wanxiang_task(api_key, endpoint, body).await?;
+    let image_url = poll_wanxiang_task(api_key, &task_id).await?;
+    download_image(&image_url).await
+}
+
 async fn generate_local_sd(endpoint: String, body: Value) -> Result<Vec<u8>, String> {
     let client = build_http_client("Local SD", None)?;
     let response = client
@@ -707,6 +953,16 @@ pub async fn generate_base(config: &ProviderConfig, prompt: &str) -> Result<Vec<
             "siliconflow" => {
                 let body = siliconflow_base_body(&config.base_model, prompt, 256, 256);
                 generate_siliconflow(config, body).await
+            }
+            "wanxiang" => {
+                let endpoint = wanxiang_endpoint_for_base(&config.base_model);
+                let body = wanxiang_base_body(
+                    &config.base_model,
+                    prompt,
+                    WANXIANG_BASE_SIZE.0,
+                    WANXIANG_BASE_SIZE.1,
+                );
+                generate_wanxiang(config, endpoint, body).await
             }
             "localsd" | "local_sd" => {
                 let body = local_sd_base_body(prompt, 256, 256);
@@ -741,6 +997,11 @@ pub async fn generate_row(
                     256,
                 );
                 generate_siliconflow(config, body).await
+            }
+            "wanxiang" => {
+                let endpoint = wanxiang_endpoint_for_row(&config.reference_model);
+                let body = wanxiang_row_body(&config.reference_model, prompt, &base_data_url);
+                generate_wanxiang(config, endpoint, body).await
             }
             "localsd" | "local_sd" => {
                 let body =
@@ -804,6 +1065,147 @@ mod tests {
                 "num_inference_steps": 20,
             })
         );
+    }
+
+    #[test]
+    fn wanxiang_base_body_uses_legacy_prompt_shape_for_wanx_models() {
+        let body = wanxiang_base_body("wanx2.1-t2i-turbo", "base prompt", 1024, 1024);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "wanx2.1-t2i-turbo",
+                "input": { "prompt": "base prompt" },
+                "parameters": { "size": "1024*1024", "n": 1 },
+            })
+        );
+    }
+
+    #[test]
+    fn wanxiang_base_body_uses_chat_messages_shape_for_wan27_models() {
+        let body = wanxiang_base_body("wan2.7-image", "base prompt", 1024, 1024);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "wan2.7-image",
+                "input": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"text": "base prompt"}],
+                    }],
+                },
+                "parameters": { "size": "1024*1024", "n": 1 },
+            })
+        );
+    }
+
+    #[test]
+    fn wanxiang_row_body_uses_legacy_image_edit_shape_for_wanx_models() {
+        let body = wanxiang_row_body("wanx2.1-imageedit", "row prompt", BASE_IMAGE);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "wanx2.1-imageedit",
+                "input": {
+                    "prompt": "row prompt",
+                    "function": "description_edit",
+                    "base_image_url": BASE_IMAGE,
+                },
+                "parameters": { "n": 1 },
+            })
+        );
+    }
+
+    #[test]
+    fn wanxiang_row_body_uses_chat_messages_shape_for_wan27_models() {
+        let body = wanxiang_row_body("wan2.7-image-pro", "row prompt", BASE_IMAGE);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "wan2.7-image-pro",
+                "input": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"image": BASE_IMAGE},
+                            {"text": "row prompt"},
+                        ],
+                    }],
+                },
+                "parameters": { "n": 1 },
+            })
+        );
+    }
+
+    #[test]
+    fn wanxiang_url_extraction_supports_both_legacy_and_wan27_response_shapes() {
+        let legacy = json!({
+            "output": {
+                "task_status": "SUCCEEDED",
+                "results": [{"url": "https://cdn.example/legacy.png"}]
+            }
+        });
+        assert_eq!(
+            extract_wanxiang_image_url(&legacy),
+            Some("https://cdn.example/legacy.png".to_string())
+        );
+
+        let wan27 = json!({
+            "output": {
+                "task_status": "SUCCEEDED",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"image": "https://cdn.example/wan27.png", "type": "image"}
+                        ]
+                    }
+                }]
+            }
+        });
+        assert_eq!(
+            extract_wanxiang_image_url(&wan27),
+            Some("https://cdn.example/wan27.png".to_string())
+        );
+
+        let missing = json!({"output": {"task_status": "SUCCEEDED"}});
+        assert_eq!(extract_wanxiang_image_url(&missing), None);
+    }
+
+    #[test]
+    fn wanxiang_endpoint_dispatch_switches_by_model_family() {
+        assert_eq!(
+            wanxiang_endpoint_for_base("wanx2.1-t2i-turbo"),
+            WANXIANG_T2I_ENDPOINT
+        );
+        assert_eq!(
+            wanxiang_endpoint_for_base("wan2.7-image"),
+            WAN_IMAGE_GENERATION_ENDPOINT
+        );
+        assert_eq!(
+            wanxiang_endpoint_for_row("wanx2.1-imageedit"),
+            WANXIANG_EDIT_ENDPOINT
+        );
+        assert_eq!(
+            wanxiang_endpoint_for_row("wan2.6-image"),
+            WAN_IMAGE_GENERATION_ENDPOINT
+        );
+        assert!(!is_new_wan_model("wanx2.1-t2i-turbo"));
+        assert!(is_new_wan_model("wan2.7-image"));
+        assert!(is_new_wan_model("wan2.6-image"));
+    }
+
+    #[test]
+    fn wanxiang_task_ids_reject_path_traversal_and_special_chars() {
+        assert!(parse_wanxiang_task_id("").is_err());
+        assert!(parse_wanxiang_task_id("../etc/passwd").is_err());
+        assert!(parse_wanxiang_task_id("id with spaces").is_err());
+        assert!(parse_wanxiang_task_id("id?query").is_err());
+        assert_eq!(parse_wanxiang_task_id("abc-DEF_123").unwrap(), "abc-DEF_123");
     }
 
     #[test]
@@ -925,6 +1327,26 @@ mod tests {
         let invalid = json!({ "images": [{ "b64_json": "not-base64" }] });
         let error = siliconflow_image_source(&invalid).unwrap_err();
         assert!(error.contains("base64"));
+    }
+
+    #[test]
+    fn wanxiang_missing_api_key_fails_before_network() {
+        let missing_key = ProviderConfig {
+            provider: "wanxiang".to_string(),
+            api_key: None,
+            base_model: "wanx2.1-t2i-turbo".to_string(),
+            reference_model: "wanx2.1-imageedit".to_string(),
+            local_sd_url: String::new(),
+            denoising_strength: 0.55,
+        };
+        assert_eq!(
+            poll_error(generate_base(&missing_key, "prompt")),
+            "Wanxiang API key is required"
+        );
+        assert_eq!(
+            poll_error(generate_row(&missing_key, "prompt", BASE_IMAGE)),
+            "Wanxiang API key is required"
+        );
     }
 
     #[test]
@@ -1132,7 +1554,7 @@ mod tests {
 
     #[test]
     fn provider_operation_deadline_is_finite_and_shared() {
-        assert_eq!(OPERATION_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(OPERATION_TIMEOUT, Duration::from_secs(180));
     }
 
     fn poll_error<F>(future: F) -> String

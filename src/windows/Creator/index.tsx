@@ -251,7 +251,7 @@ export default function CreatorWindow() {
                 layout: data.generatedConfig.layout,
                 rowGap: data.generatedConfig.rowGap,
                 idleFrames: data.generatedConfig.idleFrames,
-                walkingFrames: data.generatedConfig.walkingFrames,
+                sleepingFrames: data.generatedConfig.sleepingFrames,
                 wavingFrames: data.generatedConfig.wavingFrames,
                 workingFrames: data.generatedConfig.workingFrames,
               } : undefined}

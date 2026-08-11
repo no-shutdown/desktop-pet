@@ -47,23 +47,23 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 150,
         facing: "forward (front-facing, exactly as in the canonical base image)",
         action: "very subtle in-place breathing loop distributed evenly across the 8 frames; frames 1-4 slowly inhale so the chest rises by only about 1-2% of body height, frames 5-8 slowly exhale back to the neutral pose; include one brief eye blink on a single frame; the silhouette is nearly identical across all 8 frames — the arms, legs, hands, head, and feet stay in place, only the chest expands very slightly and eyes blink; each frame differs from its neighbor by only a tiny continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "Keep motion tiny. No walking, waving, working, jumping, emotional reactions, arm gestures, head turns, item interaction, or new props. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
+        requirements: "Keep motion tiny. The character stands (or floats) upright with eyes OPEN — no sleeping, no waving, no desk work, no jumping, no emotional reactions, no arm gestures, no head turns, no item interaction, no new props. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
     },
     StateDefinition {
-        key: "walking",
-        label: "走路",
-        delay_ms: 100,
-        facing: "right (strict side-view profile, character's right side toward screen right — every one of the 8 frames must show the EXACT same side-view orientation; NEVER flip, mirror, rotate, or reverse the body, head, or face between frames; if the character has asymmetric markings or clothing, the SAME side of the character is visible in every single frame)",
-        action: "small in-place walking cycle in strict side-view profile facing right, distributed evenly across the 8 frames as a loopable gait; frames 1 and 5 are contact poses with legs at a modest spread and opposite arms slightly swung, frames 2-4 pass through mid-stride with the back leg lifting forward, frames 6-8 do the same leg-swap for the other leg while the head, torso, face, and side-view orientation stay IDENTICAL to every other frame; keep arm swings small and body-bob tiny; each frame differs from its neighbor by only a small continuous increment of the gait; the character's absolute horizontal position stays fixed at the frame center — the character walks in place and never translates between frames; frame 8 flows seamlessly back into frame 1",
-        requirements: "No speed lines, dust, shadows, motion trails, or detached effects. Never mirror or flip any frame — the character faces the same side (right) in every single frame without exception. Camera is fixed; the character never translates horizontally or vertically between frames.",
+        key: "sleeping",
+        label: "睡觉",
+        delay_ms: 200,
+        facing: "forward (three-quarter or front view of the desk scene, exactly the same camera angle in every frame)",
+        action: "the character is SEATED on a chair or stool behind a small desk, slumped forward and ASLEEP with the head and folded arms resting flat on the desktop as a pillow; distributed evenly across the 8 frames, only the shoulders, back, and head-on-arms rise by about 1-2% of body height on inhale (frames 1-4) and fall back on exhale (frames 5-8); the eyes stay closed; the arms, hands, torso, hips, and legs are motionless aside from that tiny breathing rise-and-fall; optionally add a single small drifting Zzz-like head sway or a slow one-frame twitch of one fingertip; each frame differs from its neighbor by only a tiny continuous increment of the breath cycle; frame 8 flows seamlessly back into frame 1",
+        requirements: "The character MUST be sitting behind a desk with head and arms resting on the desktop, eyes closed, asleep, in every single frame — no standing, sitting upright, working, waving, or opening the eyes. Keep the desk and chair identical across all 8 frames. No Zzz text symbols, sleep bubbles, dream clouds, papers, laptops, keyboards, or floating props. Camera is fixed; the character and furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
     StateDefinition {
         key: "waving",
         label: "挥手",
         delay_ms: 110,
         facing: "forward (front-facing, exactly as in the canonical base image)",
-        action: "small friendly greeting cycle distributed evenly across the 8 frames; frames 1-2 lift the near arm from the side up to about shoulder-to-head height, frames 3-6 sway the raised open hand gently side-to-side in a small arc (the elbow stays roughly in place and the hand moves less than one hand-width each way), frames 7-8 lower the arm back toward the relaxed starting pose; the other arm, torso, head, and both legs stay still and relaxed; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "No wave marks, motion arcs, lines, sparkles, symbols, or floating effects. Keep the waving arm's motion contained — do not extend it far from the body. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
+        action: "small friendly greeting cycle performed with a SINGLE arm only (the character's right arm, on the viewer's left side of the frame); distributed evenly across the 8 frames, frames 1-2 lift that one arm from the side up to about shoulder-to-head height, frames 3-6 sway the raised open hand gently side-to-side in a small arc (the elbow stays roughly in place and the hand moves less than one hand-width each way), frames 7-8 lower that same arm back toward the relaxed starting pose; the OTHER arm stays completely still and relaxed at the character's side in every single frame — never lifts, never mirrors the waving arm; the torso, head, and both legs also stay still and relaxed; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
+        requirements: "Only ONE arm ever leaves the resting pose. The non-waving arm stays down at the side, motionless, in every frame — do NOT have both arms wave, do NOT mirror the waving motion onto the other arm. No wave marks, motion arcs, lines, sparkles, symbols, or floating effects. Keep the waving arm's motion contained — do not extend it far from the body. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
     },
     StateDefinition {
         key: "working",
@@ -71,7 +71,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 120,
         facing: "forward (front-facing, exactly as in the canonical base image)",
         action: "the character is SEATED on a chair or stool behind a small desk, with a laptop or keyboard placed on the desk in front of them and both hands resting on the keyboard; distributed evenly across the 8 frames, the fingers make tiny up-and-down typing keypress motions while the wrists, arms, elbows, shoulders, torso, head, and lower body stay essentially still; the desk, chair, and laptop/keyboard are present and IDENTICAL in every frame (same position, style, size, and colour); the head may tilt by only 1-2 degrees between frames and never turns; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "The character MUST be sitting behind a desk with a laptop or keyboard on it in every single frame — no standing, walking, waving, or leaving the desk. Keep the desk, chair, and laptop/keyboard visually identical across all 8 frames. No UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
+        requirements: "The character MUST be sitting behind a desk with a laptop or keyboard on it in every single frame, awake with eyes OPEN and head UP — no standing, sleeping (head down), waving, or leaving the desk. Keep the desk, chair, and laptop/keyboard visually identical across all 8 frames. No UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
 ];
 
@@ -199,9 +199,9 @@ mod tests {
                 .iter()
                 .map(|state| state.key)
                 .collect::<Vec<_>>(),
-            vec!["idle", "walking", "waving", "working"]
+            vec!["idle", "sleeping", "waving", "working"]
         );
-        assert_eq!(state_definition("walking").unwrap().delay_ms, 100);
+        assert_eq!(state_definition("sleeping").unwrap().delay_ms, 200);
         assert_eq!(state_definition("working").unwrap().delay_ms, 120);
     }
 
