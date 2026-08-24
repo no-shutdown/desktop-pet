@@ -158,7 +158,7 @@ export default function PetWindow() {
     <div
       style={{ width: 128, height: 160, background: 'transparent', overflow: 'visible', cursor: 'grab', position: 'relative' }}
       onMouseDown={handleMouseDown}
-      onMouseEnter={() => { if (!showPicker) setPetState('waving'); }}
+      onMouseEnter={() => { if (!showPicker) setPetState('acting_cute'); }}
       onContextMenu={handleContextMenu}
     >
       <SpeechBubble text={bubbleText} onHide={handleHideBubble} />

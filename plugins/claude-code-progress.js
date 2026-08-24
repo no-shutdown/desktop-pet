@@ -8,7 +8,7 @@
 // }
 pet.onEvent('task:start', function() { pet.setState('working'); });
 pet.onEvent('task:done', function() {
-  pet.setState('waving');
+  pet.setState('acting_cute');
   pet.notify('Done! ✨');
 });
 pet.onEvent('task:fail', function() { pet.setState('idle'); });
