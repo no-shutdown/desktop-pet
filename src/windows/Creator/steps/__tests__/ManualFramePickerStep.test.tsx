@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { PET_STATE_CATALOG, PET_STATES, type PetState, type SpriteStateInfo } from '../../../../types/pet';
+import { PET_STATE_CATALOG, type PetState, type SpriteStateInfo } from '../../../../types/pet';
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -59,7 +59,7 @@ class MockFileReader {
 const EMPTY_STATES: Record<PetState, SpriteStateInfo> = {
   idle: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 150 },
   sleeping: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 100 },
-  waving: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 110 },
+  acting_cute: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 110 },
   working: { cols: 8, rows: 1, frameCount: 8, frameW: 128, frameH: 128, delayMs: 120 },
 };
 
@@ -67,6 +67,8 @@ const defaultProps = {
   onNext: vi.fn(),
   onBack: vi.fn(),
 };
+
+const EXPECTED_STATES: PetState[] = ['idle', 'sleeping', 'acting_cute', 'working'];
 
 function actionButtonName(state: PetState, count: number) {
   const label = PET_STATE_CATALOG.find((definition) => definition.key === state)!.label;
@@ -83,7 +85,7 @@ function horizontalConfig(frameCount = 8) {
     layout: 'horizontalRows' as const,
     idleFrames: frameCount,
     sleepingFrames: frameCount,
-    wavingFrames: frameCount,
+    actingCuteFrames: frameCount,
     workingFrames: frameCount,
   };
 }
@@ -147,7 +149,7 @@ describe('ManualFramePickerStep', () => {
     );
 
     await waitFor(() => {
-      for (const state of PET_STATES) {
+      for (const state of EXPECTED_STATES) {
         expect(screen.getByRole('button', { name: actionButtonName(state, 8) })).toBeTruthy();
       }
     });
@@ -165,7 +167,7 @@ describe('ManualFramePickerStep', () => {
           rowGap: 0,
           idleCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 0 })),
           sleepingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 1 })),
-          wavingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 2 })),
+          actingCuteCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 2 })),
           workingCells: Array.from({ length: 8 }, (_, col) => ({ col, row: 3 })),
         }),
       );
@@ -199,14 +201,14 @@ describe('ManualFramePickerStep', () => {
           layout: 'grid',
           idleFrames: 1,
           sleepingFrames: 1,
-          wavingFrames: 1,
+          actingCuteFrames: 1,
           workingFrames: 1,
         }}
       />,
     );
 
     await waitFor(() => {
-      for (const state of PET_STATES) {
+      for (const state of EXPECTED_STATES) {
         expect(screen.getByRole('button', { name: actionButtonName(state, 1) })).toBeTruthy();
       }
       expect(screen.queryByRole('button', { name: actionButtonName('idle', 8) })).toBeNull();
@@ -235,7 +237,7 @@ describe('ManualFramePickerStep', () => {
     const canvas = container.querySelector('canvas')!;
     setCanvasBounds(canvas);
 
-    for (const [index, state] of PET_STATES.entries()) {
+    for (const [index, state] of EXPECTED_STATES.entries()) {
       fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
       fireEvent.click(canvas, { clientX: 10 + (index % 3) * 140, clientY: 10 + Math.floor(index / 3) * 80 });
     }
@@ -251,7 +253,7 @@ describe('ManualFramePickerStep', () => {
         rowGap: 8,
         idleCells: [{ col: 0, row: 0 }],
         sleepingCells: [{ col: 1, row: 0 }],
-        wavingCells: [{ col: 2, row: 0 }],
+        actingCuteCells: [{ col: 2, row: 0 }],
         workingCells: [{ col: 0, row: 1 }],
       }),
     ));
@@ -275,7 +277,7 @@ describe('ManualFramePickerStep', () => {
     let canvas = container.querySelector('canvas')!;
     setCanvasBounds(canvas);
 
-    for (const [index, state] of PET_STATES.entries()) {
+    for (const [index, state] of EXPECTED_STATES.entries()) {
       fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
       fireEvent.click(canvas, {
         clientX: 10 + (index % 3) * 140,
@@ -298,7 +300,7 @@ describe('ManualFramePickerStep', () => {
       { clientX: 150, clientY: 10 },
       { clientX: 290, clientY: 90 },
     ];
-    for (const [index, state] of PET_STATES.entries()) {
+    for (const [index, state] of EXPECTED_STATES.entries()) {
       fireEvent.click(screen.getByRole('button', { name: actionButtonName(state, 0) }));
       fireEvent.click(canvas, replacementCells[index]);
     }
@@ -311,7 +313,7 @@ describe('ManualFramePickerStep', () => {
         dataUrl: 'data:image/png;base64,IMAGE_B',
         idleCells: [{ col: 3, row: 0 }],
         sleepingCells: [{ col: 2, row: 0 }],
-        wavingCells: [{ col: 1, row: 0 }],
+        actingCuteCells: [{ col: 1, row: 0 }],
         workingCells: [{ col: 2, row: 1 }],
       }),
     ));
@@ -339,7 +341,7 @@ describe('ManualFramePickerStep', () => {
     });
 
     await waitFor(() => {
-      for (const state of PET_STATES) {
+      for (const state of EXPECTED_STATES) {
         expect(screen.getByRole('button', { name: actionButtonName(state, 0) })).toBeTruthy();
       }
     });
@@ -367,7 +369,7 @@ describe('ManualFramePickerStep', () => {
     );
 
     await waitFor(() => {
-      for (const state of PET_STATES) {
+      for (const state of EXPECTED_STATES) {
         expect(screen.getByRole('button', { name: actionButtonName(state, 0) })).toBeTruthy();
       }
     });
@@ -408,7 +410,7 @@ describe('ManualFramePickerStep', () => {
     });
 
     await waitFor(() => {
-      for (const state of PET_STATES) {
+      for (const state of EXPECTED_STATES) {
         expect(screen.getByRole('button', { name: actionButtonName(state, 2) })).toBeTruthy();
       }
     });

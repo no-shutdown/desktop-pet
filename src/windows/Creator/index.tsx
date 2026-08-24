@@ -252,7 +252,7 @@ export default function CreatorWindow() {
                 rowGap: data.generatedConfig.rowGap,
                 idleFrames: data.generatedConfig.idleFrames,
                 sleepingFrames: data.generatedConfig.sleepingFrames,
-                wavingFrames: data.generatedConfig.wavingFrames,
+                actingCuteFrames: data.generatedConfig.actingCuteFrames,
                 workingFrames: data.generatedConfig.workingFrames,
               } : undefined}
             />

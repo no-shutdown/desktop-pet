@@ -14,7 +14,7 @@ import SaveStep from '../SaveStep';
 const STATES: Record<PetState, SpriteStateInfo> = {
   idle:    { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 },
   sleeping: { cols: 2, rows: 3, frameCount: 6, frameW: 128, frameH: 128, delayMs: 150 },
-  waving:  { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 150 },
+  acting_cute: { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 150 },
   working: { cols: 2, rows: 2, frameCount: 4, frameW: 128, frameH: 128, delayMs: 200 },
 };
 

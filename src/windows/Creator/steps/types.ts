@@ -22,7 +22,7 @@ export interface GeneratedSpriteConfig {
   layout: 'horizontalRows' | 'grid';
   idleFrames: number;
   sleepingFrames: number;
-  wavingFrames: number;
+  actingCuteFrames: number;
   workingFrames: number;
 }
 

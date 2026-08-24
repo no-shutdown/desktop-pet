@@ -101,7 +101,7 @@ function buildGeneratedConfig(runId: string): GeneratedSpriteConfig {
     layout: 'horizontalRows',
     idleFrames: 8,
     sleepingFrames: 8,
-    wavingFrames: 8,
+    actingCuteFrames: 8,
     workingFrames: 8,
   };
 }

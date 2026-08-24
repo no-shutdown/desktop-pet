@@ -30,7 +30,7 @@ interface Props {
     layout?: 'horizontalRows' | 'grid';
     idleFrames?: number;
     sleepingFrames?: number;
-    wavingFrames?: number;
+    actingCuteFrames?: number;
     workingFrames?: number;
   };
 }
@@ -38,7 +38,7 @@ interface Props {
 const ACTION_COLORS: Record<PetState, string> = {
   idle: '#4f8ef7',
   sleeping: '#48bb78',
-  waving: '#ed8936',
+  acting_cute: '#ed8936',
   working: '#e53e3e',
 };
 
@@ -137,7 +137,7 @@ export default function ManualFramePickerStep({
     const frameCounts: Record<PetState, number> = {
       idle: initialConfig.idleFrames ?? 0,
       sleeping: initialConfig.sleepingFrames ?? 0,
-      waving: initialConfig.wavingFrames ?? 0,
+      acting_cute: initialConfig.actingCuteFrames ?? 0,
       working: initialConfig.workingFrames ?? 0,
     };
 
@@ -154,7 +154,7 @@ export default function ManualFramePickerStep({
     initialConfig?.rowGap,
     initialConfig?.idleFrames,
     initialConfig?.sleepingFrames,
-    initialConfig?.wavingFrames,
+    initialConfig?.actingCuteFrames,
     initialConfig?.workingFrames,
   ]);
 
@@ -338,7 +338,7 @@ export default function ManualFramePickerStep({
         rowGap,
         idleCells:    selections.idle,
         sleepingCells: selections.sleeping,
-        wavingCells:  selections.waving,
+        actingCuteCells: selections.acting_cute,
         workingCells: selections.working,
       });
       onNext(petId, result, stagingRunId);

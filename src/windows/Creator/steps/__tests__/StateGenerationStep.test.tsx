@@ -114,7 +114,7 @@ describe('StateGenerationStep', () => {
     const rowCalls = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
       .map(([, args]) => args as { state: string; runId: string });
-    expect(rowCalls.map(({ state }) => state)).toEqual(['idle', 'sleeping', 'waving', 'working']);
+    expect(rowCalls.map(({ state }) => state)).toEqual(['idle', 'sleeping', 'acting_cute', 'working']);
     expect(rowCalls.every(({ runId }) => runId === 'run-1')).toBe(true);
     expect(mockInvoke.mock.calls.filter(([name]) => name === 'generate_state_row').every(([, args]) => (
       args.imageProvider === 'siliconflow'
@@ -135,7 +135,7 @@ describe('StateGenerationStep', () => {
       layout: 'horizontalRows',
       idleFrames: 8,
       sleepingFrames: 8,
-      wavingFrames: 8,
+      actingCuteFrames: 8,
       workingFrames: 8,
     });
   });
@@ -217,7 +217,7 @@ describe('StateGenerationStep', () => {
     expect(screen.getByRole('button', { name: '重新生成 待机' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '重新生成 睡觉' })).toBeTruthy();
 
-    // Regenerate just sleeping (second attempt succeeds); waving/working stay pending.
+    // Regenerate just sleeping (second attempt succeeds); acting_cute/working stay pending.
     fireEvent.click(screen.getByRole('button', { name: '重新生成 睡觉' }));
     await screen.findByText('睡觉：已完成');
     expect(screen.queryByRole('button', { name: '下一步' })).toBeNull();
@@ -229,7 +229,7 @@ describe('StateGenerationStep', () => {
     const states = mockInvoke.mock.calls
       .filter(([name]) => name === 'generate_state_row')
       .map(([, args]) => (args as { state: string }).state);
-    expect(states).toEqual(['idle', 'sleeping', 'sleeping', 'waving', 'working']);
+    expect(states).toEqual(['idle', 'sleeping', 'sleeping', 'acting_cute', 'working']);
     expect(onNext).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '下一步' }));
