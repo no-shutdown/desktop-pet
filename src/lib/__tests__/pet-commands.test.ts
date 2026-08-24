@@ -13,7 +13,7 @@ const META: SpriteStateInfo = { cols: 2, rows: 2, frameCount: 4, frameW: 128, fr
 const mockPet: Pet = {
   id: 'test-id',
   name: 'Test',
-  states: { idle: META, sleeping: META, waving: META, working: META },
+  states: { idle: META, sleeping: META, acting_cute: META, working: META },
   createdAt: '2026-08-03T10:00:00Z',
   prompt: 'chibi',
 };

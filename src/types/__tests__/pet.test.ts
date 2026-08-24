@@ -10,7 +10,8 @@ describe('Pet types', () => {
   it('PET_STATES has all four states', () => {
     expect(PET_STATES).toContain('idle');
     expect(PET_STATES).toContain('sleeping');
-    expect(PET_STATES).toContain('waving');
+    expect(PET_STATES).toContain('acting_cute');
+    expect(PET_STATES).not.toContain('waving');
     expect(PET_STATES).toContain('working');
     expect(PET_STATES).toHaveLength(4);
   });
@@ -19,7 +20,7 @@ describe('Pet types', () => {
     const pet: Pet = {
       id: 'abc',
       name: 'Test',
-      states: { idle: META, sleeping: META, waving: META, working: META },
+      states: { idle: META, sleeping: META, acting_cute: META, working: META },
       createdAt: '2026-08-03T10:00:00Z',
       prompt: 'chibi',
     };

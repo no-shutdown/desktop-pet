@@ -58,8 +58,8 @@ describe('PluginSandbox', () => {
   });
 
   it('loadPlugin executes code with pet API', () => {
-    sandbox.loadPlugin(`pet.setState('waving');`);
-    expect(onSetState).toHaveBeenCalledWith('waving');
+    sandbox.loadPlugin(`pet.setState('acting_cute');`);
+    expect(onSetState).toHaveBeenCalledWith('acting_cute');
   });
 
   it('loadPlugin registers onEvent handler via code', () => {

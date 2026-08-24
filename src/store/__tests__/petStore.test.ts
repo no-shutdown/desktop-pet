@@ -10,7 +10,7 @@ const makePet = (): Pet => ({
   states: {
     idle:    META,
     sleeping: { cols: 2, rows: 3, frameCount: 6, frameW: 128, frameH: 128, delayMs: 150 },
-    waving:  { ...META, delayMs: 150 },
+    acting_cute: { ...META, delayMs: 150 },
     working: META,
   },
   createdAt: '2026-08-03T10:00:00Z',
@@ -39,8 +39,8 @@ describe('petStore', () => {
 
   it('non-idle state auto-resets to idle after 3s', () => {
     vi.useFakeTimers();
-    usePetStore.getState().setPetState('waving');
-    expect(usePetStore.getState().petState).toBe('waving');
+    usePetStore.getState().setPetState('acting_cute');
+    expect(usePetStore.getState().petState).toBe('acting_cute');
     vi.advanceTimersByTime(3001);
     expect(usePetStore.getState().petState).toBe('idle');
   });

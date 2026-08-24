@@ -15,8 +15,8 @@ export interface Pet {
   states: Record<PetState, SpriteStateInfo>;
 }
 
-export type PetState = 'idle' | 'sleeping' | 'waving' | 'working';
-export const PET_STATES: PetState[] = ['idle', 'sleeping', 'waving', 'working'];
+export type PetState = 'idle' | 'sleeping' | 'acting_cute' | 'working';
+export const PET_STATES: PetState[] = ['idle', 'sleeping', 'acting_cute', 'working'];
 
 export interface PetStateDefinition {
   key: PetState;
@@ -27,13 +27,13 @@ export interface PetStateDefinition {
 export const PET_STATE_LABELS: Record<PetState, string> = {
   idle: '待机',
   sleeping: '睡觉',
-  waving: '挥手',
+  acting_cute: '撒娇',
   working: '工作',
 };
 
 export const PET_STATE_CATALOG: readonly PetStateDefinition[] = [
   { key: 'idle', label: PET_STATE_LABELS.idle, delayMs: 150 },
   { key: 'sleeping', label: PET_STATE_LABELS.sleeping, delayMs: 200 },
-  { key: 'waving', label: PET_STATE_LABELS.waving, delayMs: 110 },
+  { key: 'acting_cute', label: PET_STATE_LABELS.acting_cute, delayMs: 110 },
   { key: 'working', label: PET_STATE_LABELS.working, delayMs: 120 },
 ];
