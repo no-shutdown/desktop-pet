@@ -114,13 +114,17 @@ mod tests {
 
     #[test]
     fn row_prompt_references_the_canonical_base_and_has_fixed_layout_contract() {
-        let state = state_definition("sleeping").unwrap();
+        let state = state_definition("acting_cute").unwrap();
         let prompt = build_row_prompt(
             "a tiny orange fox with a blue scarf",
             "#00FFFF",
             "cyan",
             state,
         );
+
+        assert!(prompt.contains("hands held close to the face or chest"));
+        assert!(prompt.contains("No hearts, text, symbols, motion lines"));
+        assert!(!prompt.to_lowercase().contains("wave"));
 
         for term in [
             "8-frame sprite animation cycle",
@@ -143,7 +147,7 @@ mod tests {
             "shared horizontal ground line",
             "identical scale",
             "facing direction lock",
-            "front view",
+            "front-facing",
             "never mirror, flip, or reverse",
             "no cropped limbs",
             "preserve identity",

@@ -47,7 +47,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 150,
         facing: "forward (front-facing, exactly as in the canonical base image)",
         action: "very subtle in-place breathing loop distributed evenly across the 8 frames; frames 1-4 slowly inhale so the chest rises by only about 1-2% of body height, frames 5-8 slowly exhale back to the neutral pose; include one brief eye blink on a single frame; the silhouette is nearly identical across all 8 frames — the arms, legs, hands, head, and feet stay in place, only the chest expands very slightly and eyes blink; each frame differs from its neighbor by only a tiny continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "Keep motion tiny. The character stands (or floats) upright with eyes OPEN — no sleeping, no waving, no desk work, no jumping, no emotional reactions, no arm gestures, no head turns, no item interaction, no new props. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
+        requirements: "Keep motion tiny. The character stands (or floats) upright with eyes OPEN — no sleeping, no greeting gesture, no desk work, no jumping, no emotional reactions, no arm gestures, no head turns, no item interaction, no new props. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
     },
     StateDefinition {
         key: "sleeping",
@@ -55,15 +55,15 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 200,
         facing: "forward (three-quarter or front view of the desk scene, exactly the same camera angle in every frame)",
         action: "the character is SEATED on a chair or stool behind a small desk, slumped forward and ASLEEP with the head and folded arms resting flat on the desktop as a pillow; distributed evenly across the 8 frames, only the shoulders, back, and head-on-arms rise by about 1-2% of body height on inhale (frames 1-4) and fall back on exhale (frames 5-8); the eyes stay closed; the arms, hands, torso, hips, and legs are motionless aside from that tiny breathing rise-and-fall; optionally add a single small drifting Zzz-like head sway or a slow one-frame twitch of one fingertip; each frame differs from its neighbor by only a tiny continuous increment of the breath cycle; frame 8 flows seamlessly back into frame 1",
-        requirements: "The character MUST be sitting behind a desk with head and arms resting on the desktop, eyes closed, asleep, in every single frame — no standing, sitting upright, working, waving, or opening the eyes. Keep the desk and chair identical across all 8 frames. No Zzz text symbols, sleep bubbles, dream clouds, papers, laptops, keyboards, or floating props. Camera is fixed; the character and furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
+        requirements: "The character MUST be sitting behind a desk with head and arms resting on the desktop, eyes closed, asleep, in every single frame — no standing, sitting upright, working, or greeting gesture, and do not open the eyes. Keep the desk and chair identical across all 8 frames. No Zzz text symbols, sleep bubbles, dream clouds, papers, laptops, keyboards, or floating props. Camera is fixed; the character and furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
     StateDefinition {
-        key: "waving",
-        label: "挥手",
+        key: "acting_cute",
+        label: "撒娇",
         delay_ms: 110,
         facing: "forward (front-facing, exactly as in the canonical base image)",
-        action: "small friendly greeting cycle performed with a SINGLE arm only (the character's right arm, on the viewer's left side of the frame); distributed evenly across the 8 frames, frames 1-2 lift that one arm from the side up to about shoulder-to-head height, frames 3-6 sway the raised open hand gently side-to-side in a small arc (the elbow stays roughly in place and the hand moves less than one hand-width each way), frames 7-8 lower that same arm back toward the relaxed starting pose; the OTHER arm stays completely still and relaxed at the character's side in every single frame — never lifts, never mirrors the waving arm; the torso, head, and both legs also stay still and relaxed; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "Only ONE arm ever leaves the resting pose. The non-waving arm stays down at the side, motionless, in every frame — do NOT have both arms wave, do NOT mirror the waving motion onto the other arm. No wave marks, motion arcs, lines, sparkles, symbols, or floating effects. Keep the waving arm's motion contained — do not extend it far from the body. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
+        action: "a cute, affectionate 8-frame cycle with both hands held close to the face or chest; the head and upper body sway gently left and right in tiny continuous increments, with one brief shy blink on a single frame; keep the character planted in place and finish in a seamless loop",
+        requirements: "Both hands stay close to the face or chest in every frame. The motion is small, continuous, and centered: no greeting gesture, large arm lift, jumping, translation, head turn, or change of facing direction. No hearts, text, symbols, motion lines, sparkles, particles, glow, speech bubbles, or other detached effects. Preserve the same character identity, scale, baseline, camera, and background across all 8 frames.",
     },
     StateDefinition {
         key: "working",
@@ -71,7 +71,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 120,
         facing: "forward (front-facing, exactly as in the canonical base image)",
         action: "the character is SEATED on a chair or stool behind a small desk, with a laptop or keyboard placed on the desk in front of them and both hands resting on the keyboard; distributed evenly across the 8 frames, the fingers make tiny up-and-down typing keypress motions while the wrists, arms, elbows, shoulders, torso, head, and lower body stay essentially still; the desk, chair, and laptop/keyboard are present and IDENTICAL in every frame (same position, style, size, and colour); the head may tilt by only 1-2 degrees between frames and never turns; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "The character MUST be sitting behind a desk with a laptop or keyboard on it in every single frame, awake with eyes OPEN and head UP — no standing, sleeping (head down), waving, or leaving the desk. Keep the desk, chair, and laptop/keyboard visually identical across all 8 frames. No UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
+        requirements: "The character MUST be sitting behind a desk with a laptop or keyboard on it in every single frame, awake with eyes OPEN and head UP — no standing, sleeping (head down), greeting gesture, or leaving the desk. Keep the desk, chair, and laptop/keyboard visually identical across all 8 frames. No UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
 ];
 
@@ -199,9 +199,10 @@ mod tests {
                 .iter()
                 .map(|state| state.key)
                 .collect::<Vec<_>>(),
-            vec!["idle", "sleeping", "waving", "working"]
+            vec!["idle", "sleeping", "acting_cute", "working"]
         );
         assert_eq!(state_definition("sleeping").unwrap().delay_ms, 200);
+        assert_eq!(state_definition("acting_cute").unwrap().delay_ms, 110);
         assert_eq!(state_definition("working").unwrap().delay_ms, 120);
     }
 
