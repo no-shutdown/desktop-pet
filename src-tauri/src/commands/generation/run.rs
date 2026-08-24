@@ -362,6 +362,7 @@ mod tests {
         assert!(run.join("manifest.json").is_file());
         assert_eq!(manifest.base.path, "base.png");
         assert_eq!(manifest.states["idle"].path, "rows/idle.png");
+        assert_eq!(manifest.states["acting_cute"].path, "rows/acting_cute.png");
         assert_eq!(manifest.states["working"].path, "rows/working.png");
 
         let loaded = load_manifest(temp.path(), "run-1").unwrap();
@@ -455,7 +456,7 @@ mod tests {
 
         assert_eq!(manifest.base.status, ArtifactStatus::Generating);
         assert_eq!(manifest.base.attempts, 2);
-        for state in ["idle", "sleeping", "waving", "working"] {
+        for state in ["idle", "sleeping", "acting_cute", "working"] {
             assert_eq!(manifest.states[state].status, ArtifactStatus::Pending);
             assert_eq!(manifest.states[state].attempts, 0);
             assert!(!run.join(format!("rows/{state}.png")).exists());

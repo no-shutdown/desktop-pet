@@ -306,7 +306,7 @@ fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
     let segment_w = (content_w / frame_count).max(1);
 
     // Shared vertical scale so every character has the same on-screen height.
-    // The horizontal cap keeps a wide-outlier frame (waving arm reaching out)
+    // The horizontal cap keeps a wide-outlier frame reaching outward
     // from breaking the 128-wide destination frame.
     let scale_v = f64::from(FRAME_H) / f64::from(content_h);
     let scale_h = f64::from(FRAME_W) / f64::from(segment_w);

@@ -32,7 +32,7 @@ mod tests {
 
     fn make_pet() -> Pet {
         let mut states = HashMap::new();
-        for s in &["idle", "sleeping", "waving", "working"] {
+        for s in &["idle", "sleeping", "acting_cute", "working"] {
             states.insert(s.to_string(), make_sprite_state());
         }
         Pet {
@@ -57,7 +57,7 @@ mod tests {
         let pet = make_pet();
         assert!(pet.states.contains_key("idle"));
         assert!(pet.states.contains_key("sleeping"));
-        assert!(pet.states.contains_key("waving"));
+        assert!(pet.states.contains_key("acting_cute"));
         assert!(pet.states.contains_key("working"));
     }
 

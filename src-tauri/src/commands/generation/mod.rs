@@ -538,7 +538,7 @@ pub async fn save_combined_sprite_sheet(
     row_gap: u32,
     idle_frames: u32,
     sleeping_frames: u32,
-    waving_frames: u32,
+    acting_cute_frames: u32,
     working_frames: u32,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     let bytes = decode_data_url(&data_url)?;
@@ -552,7 +552,7 @@ pub async fn save_combined_sprite_sheet(
     let rows: [(&str, u32, u32); 4] = [
         ("idle", idle_frames, 150),
         ("sleeping", sleeping_frames, 200),
-        ("waving", waving_frames, 110),
+        ("acting_cute", acting_cute_frames, 110),
         ("working", working_frames, 120),
     ];
     let mut result = HashMap::new();
@@ -599,7 +599,7 @@ fn write_frame_selections_to_dir(
     row_gap: u32,
     idle_cells: &[FrameCell],
     sleeping_cells: &[FrameCell],
-    waving_cells: &[FrameCell],
+    acting_cute_cells: &[FrameCell],
     working_cells: &[FrameCell],
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     let bytes = decode_data_url(data_url)?;
@@ -608,7 +608,7 @@ fn write_frame_selections_to_dir(
     let state_entries: [(&str, &[FrameCell], u32); 4] = [
         ("idle", idle_cells, 150),
         ("sleeping", sleeping_cells, 200),
-        ("waving", waving_cells, 110),
+        ("acting_cute", acting_cute_cells, 110),
         ("working", working_cells, 120),
     ];
     let mut result = HashMap::new();
@@ -675,7 +675,7 @@ pub(crate) fn stage_frame_selections_at(
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
     sleeping_cells: Vec<FrameCell>,
-    waving_cells: Vec<FrameCell>,
+    acting_cute_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     let selected_dir = run_dir(app_data_dir, run_id)?.join("selected");
@@ -688,7 +688,7 @@ pub(crate) fn stage_frame_selections_at(
         row_gap,
         &idle_cells,
         &sleeping_cells,
-        &waving_cells,
+        &acting_cute_cells,
         &working_cells,
     )
 }
@@ -704,7 +704,7 @@ pub async fn stage_frame_selections(
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
     sleeping_cells: Vec<FrameCell>,
-    waving_cells: Vec<FrameCell>,
+    acting_cute_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     let data_dir = app
@@ -721,7 +721,7 @@ pub async fn stage_frame_selections(
         row_gap,
         idle_cells,
         sleeping_cells,
-        waving_cells,
+        acting_cute_cells,
         working_cells,
     )
 }
@@ -737,7 +737,7 @@ pub async fn save_frame_selections(
     row_gap: u32,
     idle_cells: Vec<FrameCell>,
     sleeping_cells: Vec<FrameCell>,
-    waving_cells: Vec<FrameCell>,
+    acting_cute_cells: Vec<FrameCell>,
     working_cells: Vec<FrameCell>,
 ) -> Result<HashMap<String, SpriteStateInfo>, String> {
     let data_dir = app
@@ -754,7 +754,7 @@ pub async fn save_frame_selections(
         row_gap,
         &idle_cells,
         &sleeping_cells,
-        &waving_cells,
+        &acting_cute_cells,
         &working_cells,
     )
 }
@@ -834,6 +834,10 @@ mod command_tests {
     #[test]
     fn validates_only_catalog_states() {
         assert_eq!(validate_state_name("idle").unwrap().key, "idle");
+        assert_eq!(
+            validate_state_name("acting_cute").unwrap().key,
+            "acting_cute"
+        );
         assert!(validate_state_name("jumping").is_err());
     }
 
@@ -898,7 +902,7 @@ mod command_tests {
         .unwrap();
 
         assert_eq!(result["idle"].frame_count, 1);
-        for state in ["idle", "sleeping", "waving", "working"] {
+        for state in ["idle", "sleeping", "acting_cute", "working"] {
             assert!(
                 run_dir(temp.path(), "manual-run")
                     .unwrap()
@@ -1046,11 +1050,11 @@ mod command_tests {
 
     #[test]
     fn progress_payload_contains_run_phase_state_and_counters() {
-        let payload = generation_progress_payload("run-1", "state", Some("sleeping"), 1, 1);
+        let payload = generation_progress_payload("run-1", "state", Some("acting_cute"), 1, 1);
 
         assert_eq!(payload["runId"], "run-1");
         assert_eq!(payload["phase"], "state");
-        assert_eq!(payload["state"], "sleeping");
+        assert_eq!(payload["state"], "acting_cute");
         assert_eq!(payload["current"], 1);
         assert_eq!(payload["total"], 1);
     }
