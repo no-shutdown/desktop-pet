@@ -13,34 +13,34 @@ describe('ContextMenu', () => {
 
   it('renders all menu items when visible', () => {
     render(<ContextMenu {...defaultProps} visible={true} />);
-    expect(screen.getByText('Switch Pet')).toBeTruthy();
-    expect(screen.getByText('Open Creator')).toBeTruthy();
-    expect(screen.getByText('Exit')).toBeTruthy();
+    expect(screen.getByText('切换宠物')).toBeTruthy();
+    expect(screen.getByText('打开创建器')).toBeTruthy();
+    expect(screen.getByText('退出')).toBeTruthy();
   });
 
   it('renders nothing when not visible', () => {
     render(<ContextMenu {...defaultProps} visible={false} />);
-    expect(screen.queryByText('Open Creator')).toBeNull();
+    expect(screen.queryByText('打开创建器')).toBeNull();
   });
 
   it('calls onSwitchPet when Switch Pet clicked', () => {
     const onSwitchPet = vi.fn();
     render(<ContextMenu {...defaultProps} visible={true} onSwitchPet={onSwitchPet} />);
-    fireEvent.click(screen.getByText('Switch Pet'));
+    fireEvent.click(screen.getByText('切换宠物'));
     expect(onSwitchPet).toHaveBeenCalledOnce();
   });
 
   it('calls onOpenCreator when clicked', () => {
     const onOpenCreator = vi.fn();
     render(<ContextMenu {...defaultProps} visible={true} onOpenCreator={onOpenCreator} />);
-    fireEvent.click(screen.getByText('Open Creator'));
+    fireEvent.click(screen.getByText('打开创建器'));
     expect(onOpenCreator).toHaveBeenCalledOnce();
   });
 
   it('calls onExit when clicked', () => {
     const onExit = vi.fn();
     render(<ContextMenu {...defaultProps} visible={true} onExit={onExit} />);
-    fireEvent.click(screen.getByText('Exit'));
+    fireEvent.click(screen.getByText('退出'));
     expect(onExit).toHaveBeenCalledOnce();
   });
 

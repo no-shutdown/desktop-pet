@@ -23,6 +23,12 @@ vi.mock('../../../../lib/settings', () => ({
     localSdDenoisingStrength: 0.55,
   }),
   saveSettings: mockSaveSettings,
+  apiKeyForProvider: (settings: { imageApiKey: string; wanxiangApiKey: string }, provider: string) => (
+    provider === 'wanxiang' ? settings.wanxiangApiKey : provider === 'localsd' ? '' : settings.imageApiKey
+  ),
+  baseModelForProvider: (settings: { imageBaseModel: string; wanxiangBaseModel: string }, provider: string) => (
+    provider === 'wanxiang' ? settings.wanxiangBaseModel : provider === 'localsd' ? '' : settings.imageBaseModel
+  ),
   SILICONFLOW_BASE_MODELS: [
     { value: 'base-model', label: 'Base model' },
     { value: 'other-base-model', label: 'Other base model' },
@@ -58,7 +64,7 @@ describe('GenerateStep', () => {
   it('calls generate_base_preview with the current backend payload', async () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('generate_base_preview', {
@@ -83,7 +89,7 @@ describe('GenerateStep', () => {
     const onBusyChange = vi.fn();
     render(<GenerateStep {...defaultProps} onBusyChange={onBusyChange} runId="run-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
 
     await waitFor(() => expect(onBusyChange).toHaveBeenCalledWith(true));
     resolveInvoke({ runId: 'run-1', dataUrl: 'base', chromaKey: '#FF00FF' });
@@ -94,13 +100,13 @@ describe('GenerateStep', () => {
     const onNext = vi.fn();
     render(<GenerateStep {...defaultProps} onNext={onNext} runId="run-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
     expect(await screen.findByAltText('canonical base preview')).toHaveAttribute(
       'src',
       'data:image/png;base64,BASE',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认基础图像' }));
 
     expect(onNext).toHaveBeenCalledWith({
       runId: 'run-1',
@@ -119,9 +125,9 @@ describe('GenerateStep', () => {
 
     render(<GenerateStep {...defaultProps} runId="run-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
     expect(await screen.findByText('provider failed')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '重新生成' }));
 
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
     expect(mockInvoke.mock.calls.map(([name]) => name)).toEqual([
@@ -139,17 +145,17 @@ describe('GenerateStep', () => {
     mockInvoke.mockRejectedValue(new Error('no provider fallback'));
     render(<GenerateStep {...defaultProps} runId="run-1" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Base' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
 
     expect(await screen.findByText('no provider fallback')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Retry Base' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重新生成' })).toBeTruthy();
     expect(mockInvoke.mock.calls.every(([name]) => name === 'generate_base_preview')).toBe(true);
   });
 
   it('stores model changes using the canonical settings fields', () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
 
-    fireEvent.change(screen.getByLabelText('Base model'), {
+    fireEvent.change(screen.getByLabelText('SiliconFlow 基础模型'), {
       target: { value: 'other-base-model' },
     });
 
