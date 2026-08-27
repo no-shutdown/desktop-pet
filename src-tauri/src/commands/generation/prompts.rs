@@ -218,6 +218,33 @@ mod tests {
     }
 
     #[test]
+    fn base_and_row_prompts_forbid_background_fragment_and_color_spill_artifacts() {
+        let base_prompt = build_base_prompt("a canonical pet", "#FF00FF", "magenta");
+        let row_prompt = build_row_prompt(
+            "a canonical pet",
+            "#FF00FF",
+            "magenta",
+            state_definition("working").unwrap(),
+        );
+
+        for term in [
+            "enclosed background fragments",
+            "background-colored holes between hair/body parts",
+            "halos",
+            "color spill",
+        ] {
+            assert!(
+                base_prompt.to_lowercase().contains(term),
+                "base prompt missing term: {term}"
+            );
+            assert!(
+                row_prompt.to_lowercase().contains(term),
+                "row prompt missing term: {term}"
+            );
+        }
+    }
+
+    #[test]
     fn base_prompt_truncates_description_on_a_utf8_boundary() {
         let description = format!("{}终点", "a".repeat(299));
         let prompt = build_base_prompt(&description, "#FF00FF", "magenta");
