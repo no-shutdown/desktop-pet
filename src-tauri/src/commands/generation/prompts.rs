@@ -6,6 +6,33 @@ const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, label
 const STATIC_FRAME_CONTRACT: &str = "The 8 columns MUST be stable copies of the same static pose; do not force visible motion or differences between columns. Keep the character, furniture, scale, baseline, and camera fixed.";
 const ANIMATED_FRAME_CONTRACT: &str = "The 8 columns MUST show 8 visibly DIFFERENT frames of the same continuous motion; each neighboring column changes only by a small continuous increment and frame 8 loops smoothly back to frame 1.";
 
+struct FramePromptContract {
+    output_description: &'static str,
+    reference_columns: &'static str,
+    frame_variation: &'static str,
+    motion: &'static str,
+    positioning: &'static str,
+    identity: &'static str,
+}
+
+const STATIC_PROMPT_CONTRACT: FramePromptContract = FramePromptContract {
+    output_description: "Create an 8-column sprite sheet of",
+    reference_columns: "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size — KEEP the same static pose in every column; do not introduce motion or differences between columns.",
+    frame_variation: STATIC_FRAME_CONTRACT,
+    motion: "Keep every column identical in pose.",
+    positioning: "Every column is shot from the SAME fixed camera at the SAME zoom — the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 columns. All 8 columns share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position.",
+    identity: "Preserve identity across all 8 columns: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged; keep the same static pose in every column.",
+};
+
+const ANIMATED_PROMPT_CONTRACT: FramePromptContract = FramePromptContract {
+    output_description: "Create an 8-frame sprite animation cycle of",
+    reference_columns: "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size — REPLACE each column with a distinct animation frame; do not preserve the reference pose in any column.",
+    frame_variation: ANIMATED_FRAME_CONTRACT,
+    motion: "Keep the motion SMALL and CONTINUOUS: between any two neighbouring columns the pose changes by only a small increment of the action (no big jumps between neighbour frames), so the loop plays smoothly rather than as a slideshow of extreme poses.",
+    positioning: "Every frame is shot from the SAME fixed camera at the SAME zoom — the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames aside from the small in-place motion the action requires; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames beyond the small motion the action requires.",
+    identity: "Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged; only the pose changes to advance the animation.",
+};
+
 pub fn build_base_prompt(base_description: &str, chroma_hex: &str, chroma_name: &str) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
@@ -23,18 +50,28 @@ pub fn build_row_prompt(
 ) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
-    let frame_contract = frame_contract(state);
+    let frame_contract = frame_prompt_contract(state);
 
     format!(
-        "Create an 8-frame sprite animation cycle of {description} performing this action: {}. Requirements: {}. The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size — REPLACE each column with a distinct animation frame; do not preserve the reference pose in any column. Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. {} Keep the motion SMALL and CONTINUOUS: between any two neighbouring columns the pose changes by only a small increment of the action (no big jumps between neighbour frames), so the loop plays smoothly rather than as a slideshow of extreme poses. Every frame is shot from the SAME fixed camera at the SAME zoom — the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames aside from the small in-place motion the action requires; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames beyond the small motion the action requires. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged; only the pose changes to advance the animation. FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
-        state.action, state.requirements, frame_contract, state.facing, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
+        "{} {description} performing this action: {}. Requirements: {}. {} Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. {} {} {} {} FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
+        frame_contract.output_description,
+        state.action,
+        state.requirements,
+        frame_contract.reference_columns,
+        frame_contract.frame_variation,
+        frame_contract.motion,
+        frame_contract.positioning,
+        frame_contract.identity,
+        state.facing,
+        ROW_NEGATIVE_EXCLUSIONS,
+        chroma_exclusion
     )
 }
 
-fn frame_contract(state: &StateDefinition) -> &'static str {
+fn frame_prompt_contract(state: &StateDefinition) -> &'static FramePromptContract {
     match state.frame_variation {
-        FrameVariation::Static => STATIC_FRAME_CONTRACT,
-        FrameVariation::Animated => ANIMATED_FRAME_CONTRACT,
+        FrameVariation::Static => &STATIC_PROMPT_CONTRACT,
+        FrameVariation::Animated => &ANIMATED_PROMPT_CONTRACT,
     }
 }
 
@@ -83,6 +120,10 @@ mod tests {
             "chest rises",
             "brief eye blink",
             "8 visibly different frames",
+            "8-frame sprite animation cycle",
+            "distinct animation frame",
+            "keep the motion small",
+            "only the pose changes",
         ] {
             assert!(!prompt.contains(term), "unexpected term: {term}");
         }
