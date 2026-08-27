@@ -332,11 +332,15 @@ fn remove_interior_background_holes(
             let mut region = Vec::new();
             let mut queue = VecDeque::new();
             let mut touches_edge = false;
-            visited[start_idx] = true;
+            let mut oversized = false;
             queue.push_back((x, y));
 
             while let Some((current_x, current_y)) = queue.pop_front() {
                 let current_idx = (current_y * width + current_x) as usize;
+                if visited[current_idx] {
+                    continue;
+                }
+                visited[current_idx] = true;
                 if edge_processed[current_idx]
                     || !is_background_like(
                         image.get_pixel(current_x, current_y),
@@ -352,28 +356,16 @@ fn remove_interior_background_holes(
                     || current_y == 0
                     || current_x == width - 1
                     || current_y == height - 1;
-                region.push((current_x, current_y));
-
-                let mut neighbors = VecDeque::new();
-                push_neighbors(&mut neighbors, current_x, current_y, width, height);
-                while let Some((neighbor_x, neighbor_y)) = neighbors.pop_front() {
-                    let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
-                    if visited[neighbor_idx] || edge_processed[neighbor_idx] {
-                        continue;
-                    }
-                    visited[neighbor_idx] = true;
-                    if is_background_like(
-                        image.get_pixel(neighbor_x, neighbor_y),
-                        actual_bg,
-                        threshold,
-                        ramp_end,
-                    ) {
-                        queue.push_back((neighbor_x, neighbor_y));
-                    }
+                if region.len() < MAX_COMPONENT_SIZE {
+                    region.push((current_x, current_y));
+                } else {
+                    oversized = true;
                 }
+
+                push_neighbors(&mut queue, current_x, current_y, width, height);
             }
 
-            if !touches_edge && region.len() <= MAX_COMPONENT_SIZE {
+            if !touches_edge && !oversized {
                 for (region_x, region_y) in region {
                     apply_background_alpha(
                         image, region_x, region_y, actual_bg, threshold, ramp_end,
@@ -878,15 +870,23 @@ mod tests {
     fn removes_a_diagonal_background_gap() {
         let key = CHROMA_KEY_CANDIDATES[0];
         let foreground = Rgba([20, 30, 40, 255]);
-        let mut image =
-            RgbaImage::from_pixel(8, 8, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
-        for (x, y) in [(1, 0), (0, 1), (2, 1), (1, 2)] {
+        let key_pixel = Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]);
+        let mut image = RgbaImage::from_pixel(70, 70, key_pixel);
+        for y in 1..=68 {
+            for x in 1..=68 {
+                if x == 1 || x == 68 || y == 1 || y == 68 {
+                    image.put_pixel(x, y, foreground);
+                }
+            }
+        }
+        image.put_pixel(1, 1, key_pixel);
+        for (x, y) in [(0, 1), (1, 0), (1, 2), (2, 1), (0, 2), (2, 0)] {
             image.put_pixel(x, y, foreground);
         }
 
         remove_chroma_background(&mut image, &key);
 
-        assert_eq!(image.get_pixel(1, 1).0, [0, 0, 0, 0]);
+        assert_eq!(image.get_pixel(34, 34).0, [0, 0, 0, 0]);
     }
 
     #[test]
@@ -906,6 +906,25 @@ mod tests {
         remove_chroma_background(&mut image, &key);
 
         assert_eq!(image.get_pixel(4, 4).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn preserves_a_large_enclosed_background_component() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let foreground = Rgba([20, 30, 40, 255]);
+        let key_pixel = Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]);
+        let mut image = RgbaImage::from_pixel(70, 70, key_pixel);
+        for y in 1..=68 {
+            for x in 1..=68 {
+                if x == 1 || x == 68 || y == 1 || y == 68 {
+                    image.put_pixel(x, y, foreground);
+                }
+            }
+        }
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(34, 34).0, key_pixel.0);
     }
 
     #[test]
