@@ -31,10 +31,17 @@ impl fmt::Debug for ProviderConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameVariation {
+    Static,
+    Animated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateDefinition {
     pub key: &'static str,
     pub label: &'static str,
     pub delay_ms: u32,
+    pub frame_variation: FrameVariation,
     pub facing: &'static str,
     pub action: &'static str,
     pub requirements: &'static str,
@@ -45,14 +52,16 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         key: "idle",
         label: "待机",
         delay_ms: 150,
+        frame_variation: FrameVariation::Static,
         facing: "forward (front-facing, exactly as in the canonical base image)",
-        action: "very subtle in-place breathing loop distributed evenly across the 8 frames; frames 1-4 slowly inhale so the chest rises by only about 1-2% of body height, frames 5-8 slowly exhale back to the neutral pose; include one brief eye blink on a single frame; the silhouette is nearly identical across all 8 frames — the arms, legs, hands, head, and feet stay in place, only the chest expands very slightly and eyes blink; each frame differs from its neighbor by only a tiny continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "Keep motion tiny. The character stands (or floats) upright with eyes OPEN — no sleeping, no greeting gesture, no desk work, no jumping, no emotional reactions, no arm gestures, no head turns, no item interaction, no new props. Camera is fixed; the character stays absolutely centered and does not translate horizontally or vertically between frames.",
+        action: "static standby/static standing hold: stable copies of the same static pose across all 8 columns; keep the character upright, front-facing, centered, and nearly identical in every column with no breathing, no full-body breathing, no body scaling, no swaying, no head movement, no limb movement, and no blinking",
+        requirements: "The character stands upright in a front-facing neutral pose with eyes OPEN in every frame. No breathing, no body scaling, no swaying, no head movement, no limb movement, no eye blinking, no translation, no interaction, and no new props. Keep the character centered on the same baseline with stable copies of the same static pose across all 8 columns.",
     },
     StateDefinition {
         key: "sleeping",
         label: "睡觉",
         delay_ms: 200,
+        frame_variation: FrameVariation::Animated,
         facing: "forward (three-quarter or front view of the desk scene, exactly the same camera angle in every frame)",
         action: "the character is SEATED on a chair or stool behind a small desk, slumped forward and ASLEEP with the head and folded arms resting flat on the desktop as a pillow; distributed evenly across the 8 frames, only the shoulders, back, and head-on-arms rise by about 1-2% of body height on inhale (frames 1-4) and fall back on exhale (frames 5-8); the eyes stay closed; the arms, hands, torso, hips, and legs are motionless aside from that tiny breathing rise-and-fall; optionally add a single small drifting Zzz-like head sway or a slow one-frame twitch of one fingertip; each frame differs from its neighbor by only a tiny continuous increment of the breath cycle; frame 8 flows seamlessly back into frame 1",
         requirements: "The character MUST be sitting behind a desk with head and arms resting on the desktop, eyes closed, asleep, in every single frame — no standing, sitting upright, working, or greeting gesture, and do not open the eyes. Keep the desk and chair identical across all 8 frames. No Zzz text symbols, sleep bubbles, dream clouds, papers, laptops, keyboards, or floating props. Camera is fixed; the character and furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
@@ -61,6 +70,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         key: "acting_cute",
         label: "撒娇",
         delay_ms: 110,
+        frame_variation: FrameVariation::Animated,
         facing: "forward (front-facing, exactly as in the canonical base image)",
         action: "a cute, affectionate 8-frame cycle with both hands held close to the face or chest; the head and upper body sway gently left and right in tiny continuous increments, with one brief shy blink on a single frame; keep the character planted in place and finish in a seamless loop",
         requirements: "Both hands stay close to the face or chest in every frame. The motion is small, continuous, and centered: no greeting gesture, large arm lift, jumping, translation, head turn, or change of facing direction. No hearts, text, symbols, motion lines, sparkles, particles, glow, speech bubbles, or other detached effects. Preserve the same character identity, scale, baseline, camera, and background across all 8 frames.",
@@ -69,9 +79,10 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         key: "working",
         label: "工作",
         delay_ms: 120,
+        frame_variation: FrameVariation::Animated,
         facing: "forward (front-facing, exactly as in the canonical base image)",
-        action: "the character is SEATED on a chair or stool behind a small desk, with a laptop or keyboard placed on the desk in front of them and both hands resting on the keyboard; distributed evenly across the 8 frames, the fingers make tiny up-and-down typing keypress motions while the wrists, arms, elbows, shoulders, torso, head, and lower body stay essentially still; the desk, chair, and laptop/keyboard are present and IDENTICAL in every frame (same position, style, size, and colour); the head may tilt by only 1-2 degrees between frames and never turns; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
-        requirements: "The character MUST be sitting behind a desk with a laptop or keyboard on it in every single frame, awake with eyes OPEN and head UP — no standing, sleeping (head down), greeting gesture, or leaving the desk. Keep the desk, chair, and laptop/keyboard visually identical across all 8 frames. No UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
+        action: "the character is SEATED behind a compact desk in every frame, with one open laptop computer centered on the desk; the laptop has a clearly visible hinged screen panel and keyboard deck and rests flat on the tabletop; both hands type on the laptop keyboard in every frame; the desk/table is fixed lower-third at elbow height and has the same desk geometry in all frames; distributed evenly across the 8 frames, the fingers make tiny up-and-down typing keypress motions while the wrists, arms, elbows, shoulders, torso, head, and lower body stay essentially still; there is no desk/chair/laptop drift or replacement; the head may tilt by only 1-2 degrees between frames and never turns; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
+        requirements: "The character MUST be SEATED behind a desk with one open laptop computer in every single frame, awake with eyes OPEN and head UP. The laptop has a clearly visible hinged screen panel and keyboard deck, rests flat on the tabletop, and both hands type on the laptop keyboard. The desk/table is fixed lower-third at elbow height with the same desk geometry in all frames. Explicitly forbid a standalone keyboard, keyboard-only output, tablet, closed laptop, laptop on the character's lap, or laptop being held: the laptop is not on the character's lap and is not being held. No desk/chair/laptop drift or replacement, no UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
 ];
 
@@ -204,6 +215,22 @@ mod tests {
         assert_eq!(state_definition("sleeping").unwrap().delay_ms, 200);
         assert_eq!(state_definition("acting_cute").unwrap().delay_ms, 110);
         assert_eq!(state_definition("working").unwrap().delay_ms, 120);
+        assert_eq!(
+            state_definition("idle").unwrap().frame_variation,
+            FrameVariation::Static
+        );
+        assert_eq!(
+            state_definition("sleeping").unwrap().frame_variation,
+            FrameVariation::Animated
+        );
+        assert_eq!(
+            state_definition("acting_cute").unwrap().frame_variation,
+            FrameVariation::Animated
+        );
+        assert_eq!(
+            state_definition("working").unwrap().frame_variation,
+            FrameVariation::Animated
+        );
     }
 
     #[test]
