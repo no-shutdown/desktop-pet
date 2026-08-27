@@ -117,7 +117,10 @@ pub fn apply_chroma_key(image: &mut RgbaImage, key: &ChromaKey, threshold: u8) {
     }
 }
 
-fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, height: u32) {
+fn for_each_neighbor<F>(x: u32, y: u32, width: u32, height: u32, mut visit: F)
+where
+    F: FnMut(u32, u32),
+{
     if width == 0 || height == 0 {
         return;
     }
@@ -128,10 +131,16 @@ fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, 
     for neighbor_y in min_y..=max_y {
         for neighbor_x in min_x..=max_x {
             if neighbor_x != x || neighbor_y != y {
-                queue.push_back((neighbor_x, neighbor_y));
+                visit(neighbor_x, neighbor_y);
             }
         }
     }
+}
+
+fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, height: u32) {
+    for_each_neighbor(x, y, width, height, |neighbor_x, neighbor_y| {
+        queue.push_back((neighbor_x, neighbor_y));
+    });
 }
 
 fn background_alpha(
@@ -333,14 +342,11 @@ fn remove_interior_background_holes(
             let mut queue = VecDeque::new();
             let mut touches_edge = false;
             let mut oversized = false;
+            visited[start_idx] = true;
             queue.push_back((x, y));
 
             while let Some((current_x, current_y)) = queue.pop_front() {
                 let current_idx = (current_y * width + current_x) as usize;
-                if visited[current_idx] {
-                    continue;
-                }
-                visited[current_idx] = true;
                 if edge_processed[current_idx]
                     || !is_background_like(
                         image.get_pixel(current_x, current_y),
@@ -362,7 +368,21 @@ fn remove_interior_background_holes(
                     oversized = true;
                 }
 
-                push_neighbors(&mut queue, current_x, current_y, width, height);
+                for_each_neighbor(current_x, current_y, width, height, |neighbor_x, neighbor_y| {
+                    let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                    if edge_processed[neighbor_idx] || visited[neighbor_idx] {
+                        return;
+                    }
+                    visited[neighbor_idx] = true;
+                    if is_background_like(
+                        image.get_pixel(neighbor_x, neighbor_y),
+                        actual_bg,
+                        threshold,
+                        ramp_end,
+                    ) {
+                        queue.push_back((neighbor_x, neighbor_y));
+                    }
+                });
             }
 
             if !touches_edge && !oversized {
@@ -679,7 +699,7 @@ mod tests {
     use super::{
         apply_chroma_key, assemble_rows, build_row_reference, choose_chroma_key,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
-        remove_chroma_background, validate_sprite_row, ChromaKey,
+        for_each_neighbor, remove_chroma_background, validate_sprite_row, ChromaKey,
         CHROMA_KEY_CANDIDATES,
     };
     use crate::commands::generation::types::{
@@ -864,6 +884,27 @@ mod tests {
         apply_chroma_key(&mut image, &key, 8);
 
         assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn enumerates_each_bounded_eight_connected_neighbor_once() {
+        let mut neighbors = Vec::new();
+
+        for_each_neighbor(1, 1, 3, 3, |x, y| neighbors.push((x, y)));
+
+        assert_eq!(
+            neighbors,
+            vec![
+                (0, 0),
+                (1, 0),
+                (2, 0),
+                (0, 1),
+                (2, 1),
+                (0, 2),
+                (1, 2),
+                (2, 2),
+            ]
+        );
     }
 
     #[test]
