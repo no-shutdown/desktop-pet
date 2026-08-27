@@ -137,9 +137,30 @@ where
     }
 }
 
-fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, height: u32) {
+fn enqueue_if_unseen(
+    queue: &mut VecDeque<(u32, u32)>,
+    queued: &mut [bool],
+    x: u32,
+    y: u32,
+    width: u32,
+) {
+    let idx = (y * width + x) as usize;
+    if !queued[idx] {
+        queued[idx] = true;
+        queue.push_back((x, y));
+    }
+}
+
+fn push_neighbors(
+    queue: &mut VecDeque<(u32, u32)>,
+    queued: &mut [bool],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) {
     for_each_neighbor(x, y, width, height, |neighbor_x, neighbor_y| {
-        queue.push_back((neighbor_x, neighbor_y));
+        enqueue_if_unseen(queue, queued, neighbor_x, neighbor_y, width);
     });
 }
 
@@ -280,18 +301,19 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
     let actual_bg = sample_border_color(image).unwrap_or(key.rgb);
 
     let mut processed = vec![false; (width * height) as usize];
+    let mut queued = vec![false; (width * height) as usize];
     let mut queue: VecDeque<(u32, u32)> = VecDeque::new();
 
     for x in 0..width {
-        queue.push_back((x, 0));
+        enqueue_if_unseen(&mut queue, &mut queued, x, 0, width);
         if height > 1 {
-            queue.push_back((x, height - 1));
+            enqueue_if_unseen(&mut queue, &mut queued, x, height - 1, width);
         }
     }
     for y in 1..height.saturating_sub(1) {
-        queue.push_back((0, y));
+        enqueue_if_unseen(&mut queue, &mut queued, 0, y, width);
         if width > 1 {
-            queue.push_back((width - 1, y));
+            enqueue_if_unseen(&mut queue, &mut queued, width - 1, y, width);
         }
     }
 
@@ -303,7 +325,7 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
         processed[idx] = true;
 
         if apply_background_alpha(image, x, y, actual_bg, FILL_THRESHOLD, ramp_end) {
-            push_neighbors(&mut queue, x, y, width, height);
+            push_neighbors(&mut queue, &mut queued, x, y, width, height);
         }
     }
 
@@ -699,7 +721,8 @@ mod tests {
     use super::{
         apply_chroma_key, assemble_rows, build_row_reference, choose_chroma_key,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
-        for_each_neighbor, remove_chroma_background, validate_sprite_row, ChromaKey,
+        enqueue_if_unseen, for_each_neighbor, remove_chroma_background, validate_sprite_row,
+        ChromaKey,
         CHROMA_KEY_CANDIDATES,
     };
     use crate::commands::generation::types::{
@@ -707,6 +730,7 @@ mod tests {
     };
     use base64::Engine;
     use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
+    use std::collections::VecDeque;
     use std::io::Cursor;
 
     fn png_bytes(image: &RgbaImage) -> Vec<u8> {
@@ -905,6 +929,17 @@ mod tests {
                 (2, 2),
             ]
         );
+    }
+
+    #[test]
+    fn enqueues_each_edge_coordinate_only_once() {
+        let mut queue = VecDeque::new();
+        let mut queued = vec![false; 9];
+
+        enqueue_if_unseen(&mut queue, &mut queued, 1, 1, 3);
+        enqueue_if_unseen(&mut queue, &mut queued, 1, 1, 3);
+
+        assert_eq!(queue.into_iter().collect::<Vec<_>>(), vec![(1, 1)]);
     }
 
     #[test]
