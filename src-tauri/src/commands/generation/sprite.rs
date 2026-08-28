@@ -427,14 +427,9 @@ pub fn normalize_horizontal_row(bytes: &[u8], key: &ChromaKey) -> Result<RgbaIma
 }
 
 /// Splits a raw row image (background already removed) into `frame_count`
-/// output frames of `FRAME_W`×`FRAME_H` each, re-centering each character
-/// horizontally in its own frame while sharing a common vertical scale and
-/// bottom-aligned baseline across all frames.
-///
-/// This is more robust than trusting the AI to place characters at exact
-/// 1/8th column boundaries: AI models routinely leave asymmetric side padding,
-/// cluster characters off-center, or output different total widths. Slicing
-/// against the visible content bounds and re-centering per column fixes those.
+/// output frames of `FRAME_W`×`FRAME_H` each. All slots use a shared crop,
+/// scale, and bottom-aligned baseline transform so local furniture coordinates
+/// are preserved across frames.
 fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
     let dst_width = FRAME_W * frame_count;
     let mut dst = RgbaImage::new(dst_width, FRAME_H);
@@ -446,9 +441,13 @@ fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
         return dst;
     };
 
-    let content_w = x_max - x_min + 1;
-    let content_h = y_max - y_min + 1;
-    let segment_w = (content_w / frame_count).max(1);
+    let content_w = x_max.saturating_sub(x_min).saturating_add(1);
+    let content_h = y_max.saturating_sub(y_min).saturating_add(1);
+    let segment_w = content_w
+        .saturating_add(frame_count.saturating_sub(1))
+        .checked_div(frame_count)
+        .unwrap_or(1)
+        .max(1);
 
     // Shared vertical scale so every character has the same on-screen height.
     // The horizontal cap keeps a wide-outlier frame reaching outward
@@ -456,50 +455,45 @@ fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
     let scale_v = f64::from(FRAME_H) / f64::from(content_h);
     let scale_h = f64::from(FRAME_W) / f64::from(segment_w);
     let global_scale = scale_v.min(scale_h);
+    let content_end = x_min.saturating_add(content_w);
 
     for i in 0..frame_count {
-        let seg_x_start = x_min + i * segment_w;
-        let seg_x_end = if i == frame_count - 1 {
-            x_max
-        } else {
-            seg_x_start + segment_w - 1
-        };
-
-        let Some((xi_min, xi_max)) = find_segment_x_bounds(
-            source, seg_x_start, seg_x_end, y_min, y_max,
-        ) else {
+        let seg_x_start = x_min.saturating_add(i.saturating_mul(segment_w));
+        if seg_x_start >= content_end {
             // Blank segment: leave the destination frame transparent so the
             // caller's validate_sprite_row surfaces a specific empty-frame error.
             continue;
-        };
+        }
 
-        let src_w = xi_max - xi_min + 1;
-        let cropped = image::imageops::crop_imm(source, xi_min, y_min, src_w, content_h).to_image();
+        let available_w = (content_end - seg_x_start).min(segment_w);
+        let cropped = image::imageops::crop_imm(source, seg_x_start, y_min, available_w, content_h)
+            .to_image();
+        let mut padded = RgbaImage::new(segment_w, content_h);
+        for y in 0..content_h {
+            for x in 0..available_w {
+                padded.put_pixel(x, y, *cropped.get_pixel(x, y));
+            }
+        }
 
-        let scaled_w = ((f64::from(src_w) * global_scale).round() as u32)
+        let scaled_w = ((f64::from(segment_w) * global_scale).round() as u32)
             .max(1)
             .min(FRAME_W);
         let scaled_h = ((f64::from(content_h) * global_scale).round() as u32)
             .max(1)
             .min(FRAME_H);
-        let scaled = DynamicImage::ImageRgba8(cropped)
+        let scaled = DynamicImage::ImageRgba8(padded)
             .resize_exact(scaled_w, scaled_h, FilterType::Lanczos3)
             .to_rgba8();
 
-        let dst_frame_x = i * FRAME_W;
+        let dst_frame_x = i.saturating_mul(FRAME_W);
         let dst_x_offset = (FRAME_W - scaled_w) / 2;
         let dst_y_offset = FRAME_H - scaled_h;
-
-        for (px, py, pixel) in scaled.enumerate_pixels() {
-            if pixel[3] == 0 {
-                continue;
-            }
-            let dx = dst_frame_x + dst_x_offset + px;
-            let dy = dst_y_offset + py;
-            if dx < dst_width && dy < FRAME_H {
-                dst.put_pixel(dx, dy, *pixel);
-            }
-        }
+        image::imageops::overlay(
+            &mut dst,
+            &scaled,
+            i64::from(dst_frame_x.saturating_add(dst_x_offset)),
+            i64::from(dst_y_offset),
+        );
     }
 
     dst
@@ -524,30 +518,6 @@ fn find_visible_bounds(image: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
     }
 
     found.then_some((x_min, y_min, x_max, y_max))
-}
-
-fn find_segment_x_bounds(
-    image: &RgbaImage,
-    x_start: u32,
-    x_end: u32,
-    y_start: u32,
-    y_end: u32,
-) -> Option<(u32, u32)> {
-    let mut xi_min = image.width();
-    let mut xi_max = 0u32;
-    let mut found = false;
-
-    for y in y_start..=y_end {
-        for x in x_start..=x_end {
-            if image.get_pixel(x, y)[3] > 0 {
-                found = true;
-                xi_min = xi_min.min(x);
-                xi_max = xi_max.max(x);
-            }
-        }
-    }
-
-    found.then_some((xi_min, xi_max))
 }
 
 /// Wanxiang / DashScope image-edit models require each input dimension to be in
@@ -721,7 +691,8 @@ mod tests {
     use super::{
         apply_chroma_key, assemble_rows, build_row_reference, choose_chroma_key,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
-        enqueue_if_unseen, for_each_neighbor, remove_chroma_background, validate_sprite_row,
+        enqueue_if_unseen, for_each_neighbor, remove_chroma_background, slice_row_into_frames,
+        validate_sprite_row,
         ChromaKey,
         CHROMA_KEY_CANDIDATES,
     };
@@ -1107,38 +1078,74 @@ mod tests {
     }
 
     #[test]
-    fn per_frame_slicing_recenters_characters_that_the_ai_placed_off_center() {
-        // Simulate an AI-generated row where every character is shoved into the
-        // right half of its 256-pixel column. Old naive equal-slice would clip
-        // them; the new algorithm should re-center each one in its output frame.
-        let key = CHROMA_KEY_CANDIDATES[0];
-        let mut source = RgbaImage::from_pixel(
-            API_FRAME_W * DEFAULT_FRAME_COUNT,
-            API_FRAME_H,
-            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
-        );
+    fn shared_transform_preserves_frame_local_scene_coordinates() {
+        let mut source = RgbaImage::new(API_FRAME_W * DEFAULT_FRAME_COUNT, API_FRAME_H);
+        let foreground = Rgba([20, 30, 40, 255]);
         for frame_index in 0..DEFAULT_FRAME_COUNT {
-            let x_start = frame_index * 256 + 200;
-            let x_end = frame_index * 256 + 232;
-            for x in x_start..x_end {
-                for y in 32..224 {
-                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+            let frame_x = frame_index * API_FRAME_W;
+            let desk_start = if frame_index == 3 { 64 } else { 32 };
+            let body_start = if frame_index == 3 { 112 } else { 80 };
+            for x in desk_start..desk_start + 192 {
+                for y in 160..=168 {
+                    source.put_pixel(frame_x + x, y, foreground);
+                }
+            }
+            for x in body_start..body_start + 64 {
+                for y in 32..=160 {
+                    source.put_pixel(frame_x + x, y, foreground);
                 }
             }
         }
+        source.put_pixel(0, 0, foreground);
+        source.put_pixel(source.width() - 1, 0, foreground);
 
-        let normalized =
-            normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+        let normalized = slice_row_into_frames(&source, DEFAULT_FRAME_COUNT);
 
-        assert_eq!(normalized.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
-        validate_sprite_row(&normalized, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
-        for frame_index in 0..DEFAULT_FRAME_COUNT {
-            let center = frame_index * FRAME_W + FRAME_W / 2;
-            assert!(
-                normalized.get_pixel(center, FRAME_H / 2)[3] > 0,
-                "frame {frame_index} character should be re-centered around x={center}"
-            );
-        }
+        assert_eq!(
+            normalized.dimensions(),
+            (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H)
+        );
+
+        // Lanczos3 preserves a low-alpha fringe outside hard source edges;
+        // measure the near-opaque core to validate the shared transform.
+        let is_solid_core = |pixel: &Rgba<u8>| pixel[3] >= 200;
+        let desk_left_edge = |frame_index: u32| {
+            let frame_x = frame_index * FRAME_W;
+            let (densest_y, _) = (96..FRAME_H)
+                .map(|y| {
+                    let opaque_pixels = (frame_x..frame_x + FRAME_W)
+                        .filter(|&x| is_solid_core(normalized.get_pixel(x, y)))
+                        .count();
+                    (y, opaque_pixels)
+                })
+                .max_by_key(|&(_, opaque_pixels)| opaque_pixels)
+                .expect("desk search range should not be empty");
+            (frame_x..frame_x + FRAME_W)
+                .find(|&x| is_solid_core(normalized.get_pixel(x, densest_y)))
+                .map(|x| x - frame_x)
+                .expect("desk row should have visible pixels")
+        };
+
+        assert_eq!(desk_left_edge(0), 16);
+        assert_eq!(desk_left_edge(3), 32);
+
+        let body_center = |frame_index: u32| {
+            let frame_x = frame_index * FRAME_W;
+            let mut min_x = FRAME_W;
+            let mut max_x = 0;
+            for y in 56..112 {
+                for x in frame_x..frame_x + FRAME_W {
+                    if is_solid_core(normalized.get_pixel(x, y)) {
+                        let local_x = x - frame_x;
+                        min_x = min_x.min(local_x);
+                        max_x = max_x.max(local_x);
+                    }
+                }
+            }
+            (min_x + max_x) / 2
+        };
+
+        assert!(body_center(3) > body_center(0) + 8);
     }
 
     #[test]
