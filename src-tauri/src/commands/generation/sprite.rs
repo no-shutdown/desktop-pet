@@ -140,28 +140,29 @@ where
 
 fn enqueue_if_unseen(
     queue: &mut VecDeque<(u32, u32)>,
-    queued: &mut [bool],
+    states: &mut [u8],
     x: u32,
     y: u32,
     width: u32,
+    state: u8,
 ) {
     let idx = (y * width + x) as usize;
-    if !queued[idx] {
-        queued[idx] = true;
+    if states[idx] == 0 {
+        states[idx] = state;
         queue.push_back((x, y));
     }
 }
 
 fn push_neighbors(
     queue: &mut VecDeque<(u32, u32)>,
-    queued: &mut [bool],
+    states: &mut [u8],
     x: u32,
     y: u32,
     width: u32,
     height: u32,
 ) {
     for_each_neighbor(x, y, width, height, |neighbor_x, neighbor_y| {
-        enqueue_if_unseen(queue, queued, neighbor_x, neighbor_y, width);
+        enqueue_if_unseen(queue, states, neighbor_x, neighbor_y, width, EDGE_SEEN);
     });
 }
 
@@ -215,6 +216,60 @@ fn is_background_like(
     ramp_end: f32,
 ) -> bool {
     pixel[3] > 0 && background_alpha(pixel, color, threshold, ramp_end).is_some()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundKind {
+    Key,
+    Sampled,
+}
+
+const EDGE_SEEN: u8 = 1;
+const INTERIOR_SEEN: u8 = 2;
+const OVERSIZED_COMPONENT: u8 = 4;
+const KEY_THRESHOLD: f32 = 8.0;
+const KEY_RAMP_END: f32 = 24.0;
+const ENCLOSED_THRESHOLD: f32 = 24.0;
+const ENCLOSED_RAMP_END: f32 = 32.0;
+const MAX_COMPONENT_SIZE: usize = 4096;
+const MAX_KEY_GAP_SIZE: usize = 16;
+const MAX_KEY_GAP_WIDTH: u32 = 2;
+const MAX_KEY_GAP_HEIGHT: u32 = 2;
+
+fn background_kind(
+    pixel: &Rgba<u8>,
+    key: &ChromaKey,
+    actual_bg: [u8; 3],
+    threshold: f32,
+    ramp_end: f32,
+) -> Option<BackgroundKind> {
+    if background_alpha(pixel, key.rgb, KEY_THRESHOLD, KEY_RAMP_END).is_some() {
+        Some(BackgroundKind::Key)
+    } else if is_background_like(pixel, actual_bg, threshold, ramp_end) {
+        Some(BackgroundKind::Sampled)
+    } else {
+        None
+    }
+}
+
+fn apply_background_kind(
+    image: &mut RgbaImage,
+    x: u32,
+    y: u32,
+    kind: BackgroundKind,
+    key: &ChromaKey,
+    actual_bg: [u8; 3],
+    threshold: f32,
+    ramp_end: f32,
+) {
+    match kind {
+        BackgroundKind::Key => {
+            apply_background_alpha(image, x, y, key.rgb, KEY_THRESHOLD, KEY_RAMP_END);
+        }
+        BackgroundKind::Sampled => {
+            apply_background_alpha(image, x, y, actual_bg, threshold, ramp_end);
+        }
+    }
 }
 
 /// Samples the actual background colour from an outer border strip and returns
@@ -306,47 +361,65 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
     // the sampled background is preserved unless it touches the frame edge.
     let actual_bg = sample_border_color(image).unwrap_or(key.rgb);
 
-    // The configured key is a stronger signal than the sampled colour. Apply
-    // its existing hard-threshold/anti-aliased ramp globally so enclosed key-
-    // coloured gaps (for example between strands of hair) cannot survive.
-    apply_chroma_key(image, key, 8);
-
-    let mut processed = vec![false; (width * height) as usize];
-    let mut queued = vec![false; (width * height) as usize];
+    // Use one state byte per pixel for both the edge traversal and the
+    // enclosed-component scan. Key-colour pixels are accepted here only when
+    // they are connected to the border; enclosed key-colour details are
+    // handled later by the small-gap rule.
+    let mut states = vec![0u8; (width * height) as usize];
     let mut queue: VecDeque<(u32, u32)> = VecDeque::new();
 
     for x in 0..width {
-        enqueue_if_unseen(&mut queue, &mut queued, x, 0, width);
+        enqueue_if_unseen(&mut queue, &mut states, x, 0, width, EDGE_SEEN);
         if height > 1 {
-            enqueue_if_unseen(&mut queue, &mut queued, x, height - 1, width);
+            enqueue_if_unseen(
+                &mut queue,
+                &mut states,
+                x,
+                height - 1,
+                width,
+                EDGE_SEEN,
+            );
         }
     }
     for y in 1..height.saturating_sub(1) {
-        enqueue_if_unseen(&mut queue, &mut queued, 0, y, width);
+        enqueue_if_unseen(&mut queue, &mut states, 0, y, width, EDGE_SEEN);
         if width > 1 {
-            enqueue_if_unseen(&mut queue, &mut queued, width - 1, y, width);
+            enqueue_if_unseen(
+                &mut queue,
+                &mut states,
+                width - 1,
+                y,
+                width,
+                EDGE_SEEN,
+            );
         }
     }
 
     while let Some((x, y)) = queue.pop_front() {
-        let idx = (y * width + x) as usize;
-        if processed[idx] {
+        let Some(kind) = background_kind(
+            image.get_pixel(x, y),
+            key,
+            actual_bg,
+            FILL_THRESHOLD,
+            ramp_end,
+        ) else {
             continue;
-        }
-        processed[idx] = true;
+        };
 
-        if apply_background_alpha(image, x, y, actual_bg, FILL_THRESHOLD, ramp_end) {
-            push_neighbors(&mut queue, &mut queued, x, y, width, height);
-        }
+        apply_background_kind(
+            image,
+            x,
+            y,
+            kind,
+            key,
+            actual_bg,
+            FILL_THRESHOLD,
+            ramp_end,
+        );
+        push_neighbors(&mut queue, &mut states, x, y, width, height);
     }
 
-    remove_interior_background_holes(
-        image,
-        actual_bg,
-        &processed,
-        FILL_THRESHOLD,
-        ramp_end,
-    );
+    remove_interior_background_holes(image, key, actual_bg, &mut states);
 
     for pixel in image.pixels_mut() {
         if pixel[3] == 0 {
@@ -357,83 +430,136 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
 
 fn remove_interior_background_holes(
     image: &mut RgbaImage,
+    key: &ChromaKey,
     actual_bg: [u8; 3],
-    edge_processed: &[bool],
-    threshold: f32,
-    ramp_end: f32,
+    states: &mut [u8],
 ) {
-    const MAX_COMPONENT_SIZE: usize = 4096;
     let width = image.width();
     let height = image.height();
-    let mut visited = vec![false; (width * height) as usize];
 
     for y in 0..height {
         for x in 0..width {
             let start_idx = (y * width + x) as usize;
-            if edge_processed[start_idx]
-                || visited[start_idx]
-                || !is_background_like(image.get_pixel(x, y), actual_bg, threshold, ramp_end)
-            {
+            if states[start_idx] != 0 || image.get_pixel(x, y)[3] == 0 {
                 continue;
             }
+            let Some(start_kind) = background_kind(
+                image.get_pixel(x, y),
+                key,
+                actual_bg,
+                ENCLOSED_THRESHOLD,
+                ENCLOSED_RAMP_END,
+            ) else {
+                continue;
+            };
 
-            let mut region = Vec::new();
+            let mut region = Vec::with_capacity(MAX_COMPONENT_SIZE);
             let mut queue = VecDeque::new();
             let mut touches_edge = false;
             let mut oversized = false;
-            visited[start_idx] = true;
+            let mut key_count = usize::from(start_kind == BackgroundKind::Key);
+            let mut sampled_count = usize::from(start_kind == BackgroundKind::Sampled);
+            let mut min_x = x;
+            let mut max_x = x;
+            let mut min_y = y;
+            let mut max_y = y;
+            states[start_idx] = INTERIOR_SEEN;
+            region.push((x, y));
             queue.push_back((x, y));
 
             while let Some((current_x, current_y)) = queue.pop_front() {
-                let current_idx = (current_y * width + current_x) as usize;
-                if edge_processed[current_idx]
-                    || !is_background_like(
-                        image.get_pixel(current_x, current_y),
-                        actual_bg,
-                        threshold,
-                        ramp_end,
-                    )
-                {
-                    continue;
-                }
-
                 touches_edge |= current_x == 0
                     || current_y == 0
                     || current_x == width - 1
                     || current_y == height - 1;
-                if region.len() < MAX_COMPONENT_SIZE {
-                    region.push((current_x, current_y));
-                } else {
-                    oversized = true;
+                min_x = min_x.min(current_x);
+                max_x = max_x.max(current_x);
+                min_y = min_y.min(current_y);
+                max_y = max_y.max(current_y);
+
+                if oversized {
+                    continue;
                 }
 
-                for_each_neighbor(current_x, current_y, width, height, |neighbor_x, neighbor_y| {
-                    let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
-                    if edge_processed[neighbor_idx] || visited[neighbor_idx] {
-                        return;
-                    }
-                    visited[neighbor_idx] = true;
-                    if is_background_like(
-                        image.get_pixel(neighbor_x, neighbor_y),
-                        actual_bg,
-                        threshold,
-                        ramp_end,
-                    ) {
+                for_each_neighbor(
+                    current_x,
+                    current_y,
+                    width,
+                    height,
+                    |neighbor_x, neighbor_y| {
+                        if oversized {
+                            return;
+                        }
+                        let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                        if states[neighbor_idx] & OVERSIZED_COMPONENT != 0 {
+                            oversized = true;
+                            return;
+                        }
+                        if states[neighbor_idx] != 0 {
+                            return;
+                        }
+                        let Some(kind) = background_kind(
+                            image.get_pixel(neighbor_x, neighbor_y),
+                            key,
+                            actual_bg,
+                            ENCLOSED_THRESHOLD,
+                            ENCLOSED_RAMP_END,
+                        ) else {
+                            return;
+                        };
+                        if region.len() >= MAX_COMPONENT_SIZE {
+                            oversized = true;
+                            return;
+                        }
+
+                        states[neighbor_idx] = INTERIOR_SEEN;
+                        region.push((neighbor_x, neighbor_y));
                         queue.push_back((neighbor_x, neighbor_y));
-                    }
-                });
+                        key_count += usize::from(kind == BackgroundKind::Key);
+                        sampled_count += usize::from(kind == BackgroundKind::Sampled);
+                    },
+                );
             }
 
-            if !touches_edge && !oversized {
+            if oversized {
+                // Stop expanding once the cap is reached. Mark the explored
+                // frontier as protected so later scan starts conservatively
+                // inherit the oversized decision without another full flood.
+                for &(region_x, region_y) in &region {
+                    let region_idx = (region_y * width + region_x) as usize;
+                    states[region_idx] |= OVERSIZED_COMPONENT;
+                }
+                continue;
+            }
+
+            let key_gap_like = key_count > 0
+                && sampled_count == 0
+                && region.len() <= MAX_KEY_GAP_SIZE
+                && (max_x - min_x + 1 <= MAX_KEY_GAP_WIDTH
+                    || max_y - min_y + 1 <= MAX_KEY_GAP_HEIGHT);
+            let can_remove = !touches_edge
+                && ((key_count == 0 && sampled_count <= MAX_COMPONENT_SIZE) || key_gap_like);
+
+            if can_remove {
                 for (region_x, region_y) in region {
-                    apply_background_alpha(
-                        image,
-                        region_x,
-                        region_y,
+                    if let Some(kind) = background_kind(
+                        image.get_pixel(region_x, region_y),
+                        key,
                         actual_bg,
-                        threshold,
-                        ramp_end,
-                    );
+                        ENCLOSED_THRESHOLD,
+                        ENCLOSED_RAMP_END,
+                    ) {
+                        apply_background_kind(
+                            image,
+                            region_x,
+                            region_y,
+                            kind,
+                            key,
+                            actual_bg,
+                            ENCLOSED_THRESHOLD,
+                            ENCLOSED_RAMP_END,
+                        );
+                    }
                 }
             }
         }
@@ -1261,5 +1387,82 @@ mod tests {
 
         assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert_eq!(image.get_pixel(15, 15).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn preserves_enclosed_key_colored_character_detail_but_removes_key_hair_gap() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let key_pixel = Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]);
+        let mut image = RgbaImage::from_pixel(40, 40, background);
+
+        for y in 8..32 {
+            for x in 8..32 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        for y in 10..13 {
+            for x in 10..15 {
+                image.put_pixel(x, y, key_pixel);
+            }
+        }
+        image.put_pixel(12, 11, Rgba([key.rgb[0], key.rgb[1], 250, 255]));
+        image.put_pixel(24, 24, key_pixel);
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(12, 11).0, [key.rgb[0], key.rgb[1], 250, 255]);
+        assert_eq!(image.get_pixel(10, 10).0, key_pixel.0);
+        assert_eq!(image.get_pixel(24, 24).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn preserves_an_enclosed_near_background_highlight_but_removes_a_sampled_hair_gap() {
+        let background = Rgba([200, 200, 200, 255]);
+        let foreground = Rgba([20, 30, 40, 255]);
+        let highlight = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(40, 40, background);
+
+        for y in 8..32 {
+            for x in 8..32 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        for y in 10..12 {
+            for x in 10..12 {
+                image.put_pixel(x, y, highlight);
+            }
+        }
+        image.put_pixel(24, 24, background);
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(10, 10).0, highlight.0);
+        assert_eq!(image.get_pixel(24, 24).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn preserves_an_oversized_hole_and_still_cleans_a_later_small_hair_gap() {
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(180, 180, background);
+
+        for y in 8..172 {
+            for x in 8..172 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        for y in 16..144 {
+            for x in 16..144 {
+                image.put_pixel(x, y, background);
+            }
+        }
+        image.put_pixel(152, 152, background);
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(80, 80).0, background.0);
+        assert_eq!(image.get_pixel(152, 152).0, [0, 0, 0, 0]);
     }
 }
