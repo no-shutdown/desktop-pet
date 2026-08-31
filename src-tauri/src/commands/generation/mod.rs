@@ -16,6 +16,7 @@ use crate::models::SpriteStateInfo;
 use base64::Engine as _;
 use image::{imageops, DynamicImage, ImageFormat, RgbaImage};
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
@@ -239,6 +240,183 @@ mod source_style_merge_tests {
             load_manifest(temp.path(), "run-1").unwrap().source_style,
             SourceStyle::Realistic
         );
+    }
+}
+
+#[cfg(test)]
+mod base_generation_core_tests {
+    use super::run::{create_run_at, load_manifest, manifest_path};
+    use super::run_dir;
+    use super::sprite::CHROMA_KEY_CANDIDATES;
+    use super::types::{ArtifactStatus, ProviderConfig, SourceStyle, API_FRAME_H, API_FRAME_W};
+    use super::{generate_base_preview_core_at, provider_config, source_style};
+    use image::{ImageFormat, Rgba, RgbaImage};
+    use std::fs;
+    use std::future::Future;
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    fn run_async<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn png_bytes(image: &RgbaImage) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image.clone())
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn completed_provider_image() -> Vec<u8> {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut image =
+            RgbaImage::from_pixel(32, 32, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+        for x in 8..24 {
+            for y in 4..28 {
+                image.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+            }
+        }
+        png_bytes(&image)
+    }
+
+    fn default_provider_config() -> ProviderConfig {
+        provider_config("siliconflow".to_string(), None, None, None, None, None)
+    }
+
+    #[test]
+    fn production_base_core_preserves_existing_style_when_source_style_is_omitted() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a canonical pet",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+        let seen_prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_capture = Arc::clone(&seen_prompt);
+        let provider_image = completed_provider_image();
+
+        let base = run_async(generate_base_preview_core_at(
+            temp.path(),
+            "run-1".to_string(),
+            "retry prompt".to_string(),
+            default_provider_config(),
+            source_style(None).unwrap(),
+            CHROMA_KEY_CANDIDATES[0],
+            move |_config: &ProviderConfig, prompt: &str| {
+                *prompt_capture.lock().unwrap() = prompt.to_string();
+                let provider_image = provider_image.clone();
+                async move { Ok(provider_image) }
+            },
+        ))
+        .unwrap();
+
+        let manifest = load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.source_style, SourceStyle::Realistic);
+        assert_eq!(manifest.base.status, ArtifactStatus::Complete);
+        assert_eq!(manifest.base.attempts, 1);
+        assert_eq!(base.dimensions(), (API_FRAME_W, API_FRAME_H));
+        assert!(run_dir(temp.path(), "run-1")
+            .unwrap()
+            .join("base.png")
+            .is_file());
+        assert!(seen_prompt
+            .lock()
+            .unwrap()
+            .contains("convert the realistic human photo"));
+    }
+
+    #[test]
+    fn production_base_core_defaults_legacy_manifest_to_stylized_when_source_style_is_omitted() {
+        let temp = TempDir::new().unwrap();
+        let manifest = create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a canonical pet",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+        let mut legacy = serde_json::to_value(&manifest).unwrap();
+        legacy.as_object_mut().unwrap().remove("sourceStyle");
+        fs::write(
+            manifest_path(temp.path(), "run-1").unwrap(),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+        let seen_prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_capture = Arc::clone(&seen_prompt);
+        let provider_image = completed_provider_image();
+
+        run_async(generate_base_preview_core_at(
+            temp.path(),
+            "run-1".to_string(),
+            "legacy retry prompt".to_string(),
+            default_provider_config(),
+            source_style(None).unwrap(),
+            CHROMA_KEY_CANDIDATES[0],
+            move |_config: &ProviderConfig, prompt: &str| {
+                *prompt_capture.lock().unwrap() = prompt.to_string();
+                let provider_image = provider_image.clone();
+                async move { Ok(provider_image) }
+            },
+        ))
+        .unwrap();
+
+        let manifest = load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.source_style, SourceStyle::Stylized);
+        assert_eq!(manifest.base.status, ArtifactStatus::Complete);
+        assert!(seen_prompt
+            .lock()
+            .unwrap()
+            .contains("preserve the original art style"));
+    }
+
+    #[test]
+    fn production_base_core_applies_an_explicit_source_style_update() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a canonical pet",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+        let seen_prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_capture = Arc::clone(&seen_prompt);
+        let provider_image = completed_provider_image();
+
+        run_async(generate_base_preview_core_at(
+            temp.path(),
+            "run-1".to_string(),
+            "explicit retry prompt".to_string(),
+            default_provider_config(),
+            source_style(Some("stylized")).unwrap(),
+            CHROMA_KEY_CANDIDATES[0],
+            move |_config: &ProviderConfig, prompt: &str| {
+                *prompt_capture.lock().unwrap() = prompt.to_string();
+                let provider_image = provider_image.clone();
+                async move { Ok(provider_image) }
+            },
+        ))
+        .unwrap();
+
+        let manifest = load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.source_style, SourceStyle::Stylized);
+        assert_eq!(manifest.base.status, ArtifactStatus::Complete);
+        assert!(seen_prompt
+            .lock()
+            .unwrap()
+            .contains("preserve the original art style"));
     }
 }
 
@@ -519,6 +697,52 @@ pub(crate) fn assemble_run_preview_at(
     })
 }
 
+async fn generate_base_preview_core_at<F, Fut>(
+    app_data_dir: &Path,
+    run_id: String,
+    base_prompt: String,
+    provider_config: ProviderConfig,
+    requested_source_style: Option<SourceStyle>,
+    selected_key: ChromaKey,
+    provider_call: F,
+) -> Result<RgbaImage, String>
+where
+    F: FnOnce(&ProviderConfig, &str) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, String>>,
+{
+    let provider = provider_config.provider.clone();
+    let api_key = provider_config.api_key.clone();
+    let mut manifest = prepare_base_manifest(
+        app_data_dir,
+        run_id.clone(),
+        provider.clone(),
+        base_prompt.clone(),
+        requested_source_style,
+    )?;
+    if manifest.provider != provider {
+        return Err("generation run provider cannot be changed during a retry".to_string());
+    }
+    manifest.base_prompt = base_prompt;
+    manifest.chroma_key = selected_key.hex.to_string();
+    save_manifest(app_data_dir, &manifest)?;
+    begin_base(app_data_dir, &run_id)?;
+
+    let prompt = build_base_prompt(
+        &manifest.base_prompt,
+        manifest.source_style,
+        selected_key.hex,
+        selected_key.name,
+    );
+    let provider_result = provider_call(&provider_config, &prompt).await;
+    finish_base_result_at(
+        app_data_dir,
+        &run_id,
+        &selected_key,
+        provider_result,
+        api_key.as_deref(),
+    )
+}
+
 #[tauri::command]
 pub async fn generate_base_preview(
     app: tauri::AppHandle,
@@ -542,27 +766,6 @@ pub async fn generate_base_preview(
         .transpose()?;
     let selected_key = choose_chroma_key(reference.as_ref());
     let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut manifest = prepare_base_manifest(
-        &data_dir,
-        run_id.clone(),
-        provider.clone(),
-        base_prompt.clone(),
-        requested_source_style,
-    )?;
-    if manifest.provider != provider {
-        return Err("generation run provider cannot be changed during a retry".to_string());
-    }
-    manifest.base_prompt = base_prompt;
-    manifest.chroma_key = selected_key.hex.to_string();
-    save_manifest(&data_dir, &manifest)?;
-    begin_base(&data_dir, &run_id)?;
-
-    let prompt = build_base_prompt(
-        &manifest.base_prompt,
-        manifest.source_style,
-        selected_key.hex,
-        selected_key.name,
-    );
     let config = provider_config(
         provider,
         image_api_key.clone(),
@@ -571,13 +774,20 @@ pub async fn generate_base_preview(
         local_sd_url,
         denoising_strength,
     );
-    let base = finish_base_result_at(
+    let base = generate_base_preview_core_at(
         &data_dir,
-        &run_id,
-        &selected_key,
-        generate_base(&config, &prompt).await,
-        image_api_key.as_deref(),
-    )?;
+        run_id.clone(),
+        base_prompt,
+        config,
+        requested_source_style,
+        selected_key,
+        |config, prompt| {
+            let config = config.clone();
+            let prompt = prompt.to_string();
+            async move { generate_base(&config, &prompt).await }
+        },
+    )
+    .await?;
     emit_progress(
         &app,
         generation_progress_payload(&run_id, "base", None, 1, 1),
