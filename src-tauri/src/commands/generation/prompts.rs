@@ -13,6 +13,7 @@ const REALISTIC_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical ba
 const STYLIZED_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical base image already preserves the original art medium of the reference artwork. Preserve the canonical base's exact line quality, proportions, palette, shading, and texture, as well as its style, composition, and orientation, including its existing cartoon, anime, illustration, or pixel art treatment across every frame; change only the requested state motion. Do not restyle, re-render, reinterpret, or convert the canonical base into a different medium.";
 const BASE_FACING_LOCK: &str = "CANONICAL FACING LOCK: use one fixed forward-facing character orientation for the canonical base; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition; no mirror, no flip, no turn, no side turn, and no three-quarter view.";
 const ROW_FACING_LOCK: &str = "FACING DIRECTION LOCK: match the canonical base exactly in every frame; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition with no change between frames.";
+const STYLE_REFERENCE_CONTRACT: &str = "STYLE REFERENCE CONTRACT: image 1 is the original character identity reference and image 2 is a pure style reference. Preserve image 1's identity, face, clothing, and accessories; borrow only image 2's line quality, palette, materials, shading, proportions, and overall charm. do not copy image 2's subject, clothing, pose, background, composition, props, or text.";
 
 pub fn build_base_prompt(
     base_description: &str,
@@ -20,13 +21,34 @@ pub fn build_base_prompt(
     chroma_hex: &str,
     chroma_name: &str,
 ) -> String {
+    build_base_prompt_with_style_reference(
+        base_description,
+        source_style,
+        chroma_hex,
+        chroma_name,
+        false,
+    )
+}
+
+pub fn build_base_prompt_with_style_reference(
+    base_description: &str,
+    source_style: SourceStyle,
+    chroma_hex: &str,
+    chroma_name: &str,
+    has_style_reference: bool,
+) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
     let style_contract = base_source_style_contract(source_style);
     let facing_lock = BASE_FACING_LOCK;
+    let style_reference_contract = if has_style_reference {
+        STYLE_REFERENCE_CONTRACT
+    } else {
+        ""
+    };
 
     format!(
-        "Create a game-ready canonical reference image for {description}. {style_contract} {facing_lock} Render one centered complete full-body character in a neutral relaxed pose facing {CANONICAL_FACING}, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
+        "Create a game-ready canonical reference image for {description}. {style_contract} {facing_lock}{style_reference_contract} Render one centered complete full-body character in a neutral relaxed pose facing {CANONICAL_FACING}, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
     )
 }
 
@@ -109,9 +131,7 @@ fn truncate_description(description: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_base_prompt, build_base_prompt_with_style_reference, build_row_prompt,
-    };
+    use super::{build_base_prompt, build_base_prompt_with_style_reference, build_row_prompt};
     use crate::commands::generation::types::{
         state_definition, state_definitions, SourceStyle, CANONICAL_FACING,
     };

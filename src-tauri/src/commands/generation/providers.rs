@@ -50,6 +50,25 @@ pub fn siliconflow_base_body(model: &str, prompt: &str, width: u32, height: u32)
     })
 }
 
+pub fn siliconflow_base_body_with_references(
+    model: &str,
+    prompt: &str,
+    character_image_data_url: &str,
+    style_image_data_url: &str,
+) -> Result<Value, String> {
+    if model.trim() != "Qwen/Qwen-Image-Edit-2509" {
+        return Err("SiliconFlow style references require Qwen/Qwen-Image-Edit-2509".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "image": character_image_data_url,
+        "image2": style_image_data_url,
+        "num_inference_steps": 20,
+    }))
+}
+
 pub fn siliconflow_row_body(
     model: &str,
     prompt: &str,
@@ -160,6 +179,32 @@ pub fn wanxiang_base_body(model: &str, prompt: &str, width: u32, height: u32) ->
             },
         })
     }
+}
+
+pub fn wanxiang_base_body_with_references(
+    model: &str,
+    prompt: &str,
+    character_image_data_url: &str,
+    style_image_data_url: &str,
+) -> Result<Value, String> {
+    if !is_new_wan_model(model) {
+        return Err("Wanxiang style references require wan2.6 or wan2.7 models".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "model": model,
+        "input": {
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"image": character_image_data_url},
+                    {"image": style_image_data_url},
+                    {"text": prompt},
+                ],
+            }],
+        },
+        "parameters": { "size": "1024*1024", "n": 1 },
+    }))
 }
 
 pub fn wanxiang_row_body(model: &str, prompt: &str, base_image_data_url: &str) -> Value {
@@ -1021,7 +1066,6 @@ pub async fn generate_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{siliconflow_base_body_with_references, wanxiang_base_body_with_references};
     use serde_json::json;
     use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
