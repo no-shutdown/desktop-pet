@@ -11,6 +11,8 @@ const REALISTIC_BASE_STYLE_CONTRACT: &str = "SOURCE STYLE CONTRACT: convert the 
 const STYLIZED_BASE_STYLE_CONTRACT: &str = "SOURCE STYLE CONTRACT: preserve the original art style and source medium of the reference artwork. Preserve its line quality, proportions, palette, shading, and texture, including its existing cartoon, anime, illustration, or pixel art treatment. Do not restyle, re-render, or convert the artwork into a different medium; no 3D or CGI restyling.";
 const REALISTIC_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical base image is already a cute 2D chibi character in a clean flat illustration style derived from the source. Preserve that established cute 2D chibi/flat illustration style, composition, orientation, rounded proportions, simplified shapes, palette, shading, line quality, and front-facing camera relationship across every frame; change only the requested state motion. Do not reinterpret the canonical base as a realistic image; no photorealistic rendering, no 3D render, no CGI, no realistic skin pores, no plastic materials, and no cinematic lighting.";
 const STYLIZED_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical base image already preserves the original art medium of the reference artwork. Preserve the canonical base's exact line quality, proportions, palette, shading, and texture, as well as its style, composition, and orientation, including its existing cartoon, anime, illustration, or pixel art treatment across every frame; change only the requested state motion. Do not restyle, re-render, reinterpret, or convert the canonical base into a different medium.";
+const BASE_FACING_LOCK: &str = "CANONICAL FACING LOCK: use one fixed forward-facing character orientation for the canonical base; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition; no mirror, no flip, no turn, no side turn, and no three-quarter view.";
+const ROW_FACING_LOCK: &str = "FACING DIRECTION LOCK: match the canonical base exactly in every frame; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition with no change between frames.";
 
 pub fn build_base_prompt(
     base_description: &str,
@@ -21,9 +23,10 @@ pub fn build_base_prompt(
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
     let style_contract = base_source_style_contract(source_style);
+    let facing_lock = BASE_FACING_LOCK;
 
     format!(
-        "Create a game-ready canonical reference image for {description}. {style_contract} Render one centered complete full-body character in a neutral relaxed pose facing {CANONICAL_FACING}, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
+        "Create a game-ready canonical reference image for {description}. {style_contract} {facing_lock} Render one centered complete full-body character in a neutral relaxed pose facing {CANONICAL_FACING}, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
     )
 }
 
@@ -52,12 +55,13 @@ pub fn build_row_prompt(
                 "Keep the motion SMALL and CONTINUOUS: no big jumps between neighbouring frames, so the loop plays smoothly rather than as a slideshow of extreme poses.",
             ),
         };
-    let facing_exclusions = facing_exclusions(state);
+    let facing_exclusions = facing_exclusions();
 
     format!(
-        "{intro} of {description} performing this action: {}. Requirements: {}. {style_contract} {reference_contract} Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. {frame_contract} {motion_contract} Every frame is shot from the SAME fixed camera at the SAME zoom; the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged. FACING DIRECTION LOCK - the character faces {} in every single frame without exception; same camera, same body orientation, and same head orientation in every frame. {} Never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
+        "{intro} of {description} performing this action: {}. Requirements: {}. {style_contract} {reference_contract} Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. {frame_contract} {motion_contract} Every frame is shot from the SAME fixed camera at the SAME zoom; the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged. {} The character faces {} in every single frame without exception; same camera, same composition, same body orientation, same head angle, and same gaze direction in every frame. {} Never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
         state.action,
         state.requirements,
+        ROW_FACING_LOCK,
         state.facing,
         facing_exclusions,
         ROW_NEGATIVE_EXCLUSIONS,
@@ -79,12 +83,8 @@ fn row_source_style_contract(source_style: SourceStyle) -> &'static str {
     }
 }
 
-fn facing_exclusions(state: &StateDefinition) -> &'static str {
-    if state.key == "sleeping" {
-        "Keep the character front-facing. No mirror, no flip, no turn, no side turn, and no partial reversal of the body or head."
-    } else {
-        "Keep the character front-facing. No mirror, no flip, no turn, no side turn, no three-quarter change, and no partial reversal of the body or head."
-    }
+fn facing_exclusions() -> &'static str {
+    "Keep the character front-facing. No mirror, no flip, no turn, no side turn, no three-quarter view or change, and no partial reversal of the body or head."
 }
 
 fn chroma_component_exclusion(chroma_hex: &str) -> String {
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn every_state_uses_the_canonical_facing_without_sleeping_three_quarter_view() {
+    fn every_state_uses_a_strict_canonical_facing_lock() {
         for state in state_definitions() {
             assert_eq!(state.facing, CANONICAL_FACING, "non-canonical state: {}", state.key);
             let prompt = build_row_prompt(
@@ -222,13 +222,43 @@ mod tests {
             assert!(prompt.contains("facing direction lock"));
             assert!(prompt.contains("no mirror"));
             assert!(prompt.contains("no flip"));
+            assert!(prompt.contains("head angle"));
+            assert!(prompt.contains("gaze direction"));
+            assert!(prompt.contains("camera relationship"));
+            assert!(prompt.contains("composition"));
             assert!(prompt.contains("no side turn"));
             assert!(prompt.contains("no partial reversal"));
-            if state.key == "sleeping" {
-                assert!(!prompt.contains("three-quarter"));
-            } else {
-                assert!(prompt.contains("no three-quarter change"));
-            }
+            assert!(
+                prompt.contains("no three-quarter"),
+                "missing strict three-quarter prohibition for {}",
+                state.key
+            );
+        }
+    }
+
+    #[test]
+    fn base_prompt_locks_facing_head_gaze_camera_and_composition() {
+        let prompt = build_base_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+        )
+        .to_lowercase();
+
+        for term in [
+            "canonical facing lock",
+            "head angle",
+            "body orientation",
+            "gaze direction",
+            "camera relationship",
+            "composition",
+            "no mirror",
+            "no flip",
+            "no turn",
+            "no three-quarter",
+        ] {
+            assert!(prompt.contains(term), "missing base facing term: {term}");
         }
     }
 

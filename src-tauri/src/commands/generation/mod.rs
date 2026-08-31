@@ -95,13 +95,31 @@ fn source_style(value: Option<&str>) -> Result<Option<SourceStyle>, String> {
     }
 }
 
-fn apply_source_style_update(
+fn merge_source_style(
     manifest: &mut GenerationRunManifest,
     requested_source_style: Option<SourceStyle>,
 ) {
     if let Some(source_style) = requested_source_style {
         manifest.source_style = source_style;
     }
+}
+
+fn prepare_base_manifest(
+    data_dir: &Path,
+    run_id: String,
+    provider: String,
+    base_prompt: String,
+    requested_source_style: Option<SourceStyle>,
+) -> Result<GenerationRunManifest, String> {
+    let mut manifest = create_run_at(
+        data_dir,
+        run_id,
+        provider,
+        base_prompt,
+        requested_source_style.unwrap_or_default(),
+    )?;
+    merge_source_style(&mut manifest, requested_source_style);
+    Ok(manifest)
 }
 
 #[cfg(test)]
@@ -136,12 +154,33 @@ mod source_style_parser_tests {
 mod source_style_merge_tests {
     use super::run::{create_run_at, load_manifest, manifest_path, save_manifest};
     use super::types::SourceStyle;
-    use super::{apply_source_style_update, source_style};
+    use super::{merge_source_style, prepare_base_manifest, source_style};
     use std::fs;
     use tempfile::TempDir;
 
     #[test]
-    fn retry_source_style_merge_preserves_disk_style_and_updates_only_when_explicit() {
+    fn source_style_merge_helper_preserves_existing_style_and_updates_explicitly() {
+        let temp = TempDir::new().unwrap();
+        let mut manifest = create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a canonical pet",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+
+        merge_source_style(&mut manifest, source_style(None).unwrap());
+        assert_eq!(manifest.source_style, SourceStyle::Realistic);
+        merge_source_style(
+            &mut manifest,
+            source_style(Some("stylized")).unwrap(),
+        );
+        assert_eq!(manifest.source_style, SourceStyle::Stylized);
+    }
+
+    #[test]
+    fn base_manifest_preparation_path_preserves_existing_and_legacy_disk_style() {
         let temp = TempDir::new().unwrap();
         create_run_at(
             temp.path(),
@@ -152,13 +191,16 @@ mod source_style_merge_tests {
         )
         .unwrap();
 
-        let mut existing = load_manifest(temp.path(), "run-1").unwrap();
-        apply_source_style_update(&mut existing, source_style(None).unwrap());
+        let existing = prepare_base_manifest(
+            temp.path(),
+            "run-1".to_string(),
+            "siliconflow".to_string(),
+            "retry prompt".to_string(),
+            source_style(None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(existing.source_style, SourceStyle::Realistic);
         save_manifest(temp.path(), &existing).unwrap();
-        assert_eq!(
-            load_manifest(temp.path(), "run-1").unwrap().source_style,
-            SourceStyle::Realistic
-        );
 
         let path = manifest_path(temp.path(), "run-1").unwrap();
         let mut legacy = serde_json::to_value(&existing).unwrap();
@@ -168,20 +210,30 @@ mod source_style_merge_tests {
             .remove("sourceStyle");
         fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
 
-        let mut legacy_manifest = load_manifest(temp.path(), "run-1").unwrap();
+        let legacy_manifest = prepare_base_manifest(
+            temp.path(),
+            "run-1".to_string(),
+            "siliconflow".to_string(),
+            "legacy retry prompt".to_string(),
+            source_style(None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(legacy_manifest.source_style, SourceStyle::Stylized);
-        apply_source_style_update(&mut legacy_manifest, source_style(None).unwrap());
         save_manifest(temp.path(), &legacy_manifest).unwrap();
         assert_eq!(
             load_manifest(temp.path(), "run-1").unwrap().source_style,
             SourceStyle::Stylized
         );
 
-        let mut explicit = load_manifest(temp.path(), "run-1").unwrap();
-        apply_source_style_update(
-            &mut explicit,
+        let explicit = prepare_base_manifest(
+            temp.path(),
+            "run-1".to_string(),
+            "siliconflow".to_string(),
+            "explicit retry prompt".to_string(),
             source_style(Some("realistic")).unwrap(),
         );
+        let explicit = explicit.unwrap();
+        assert_eq!(explicit.source_style, SourceStyle::Realistic);
         save_manifest(temp.path(), &explicit).unwrap();
         assert_eq!(
             load_manifest(temp.path(), "run-1").unwrap().source_style,
@@ -490,18 +542,17 @@ pub async fn generate_base_preview(
         .transpose()?;
     let selected_key = choose_chroma_key(reference.as_ref());
     let run_id = run_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut manifest = create_run_at(
+    let mut manifest = prepare_base_manifest(
         &data_dir,
         run_id.clone(),
         provider.clone(),
         base_prompt.clone(),
-        requested_source_style.unwrap_or_default(),
+        requested_source_style,
     )?;
     if manifest.provider != provider {
         return Err("generation run provider cannot be changed during a retry".to_string());
     }
     manifest.base_prompt = base_prompt;
-    apply_source_style_update(&mut manifest, requested_source_style);
     manifest.chroma_key = selected_key.hex.to_string();
     save_manifest(&data_dir, &manifest)?;
     begin_base(&data_dir, &run_id)?;
