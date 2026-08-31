@@ -1021,6 +1021,7 @@ pub async fn generate_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::{siliconflow_base_body_with_references, wanxiang_base_body_with_references};
     use serde_json::json;
     use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -1044,6 +1045,45 @@ mod tests {
             })
         );
         assert!(body.get("image").is_none());
+    }
+
+    #[test]
+    fn siliconflow_base_body_with_references_has_exact_two_image_contract() {
+        let body = siliconflow_base_body_with_references(
+            "Qwen/Qwen-Image-Edit-2509",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap();
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "Qwen/Qwen-Image-Edit-2509",
+                "prompt": "base prompt",
+                "image": "data:image/jpeg;base64,CHARACTER",
+                "image2": "data:image/png;base64,STYLE",
+                "num_inference_steps": 20,
+            })
+        );
+        assert_eq!(body["image"], "data:image/jpeg;base64,CHARACTER");
+        assert_eq!(body["image2"], "data:image/png;base64,STYLE");
+        assert_eq!(body["prompt"], "base prompt");
+        assert!(body.get("image_size").is_none());
+    }
+
+    #[test]
+    fn siliconflow_base_body_with_references_rejects_kolors() {
+        let error = siliconflow_base_body_with_references(
+            "Kwai-Kolors/Kolors",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Qwen/Qwen-Image-Edit-2509"));
     }
 
     #[test]
@@ -1098,6 +1138,52 @@ mod tests {
                 "parameters": { "size": "1024*1024", "n": 1 },
             })
         );
+    }
+
+    #[test]
+    fn wanxiang_base_body_with_references_has_exact_two_image_chat_contract() {
+        let body = wanxiang_base_body_with_references(
+            "wan2.7-image",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap();
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "wan2.7-image",
+                "input": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"image": "data:image/jpeg;base64,CHARACTER"},
+                            {"image": "data:image/png;base64,STYLE"},
+                            {"text": "base prompt"},
+                        ],
+                    }],
+                },
+                "parameters": { "size": "1024*1024", "n": 1 },
+            })
+        );
+        let content = &body["input"]["messages"][0]["content"];
+        assert_eq!(content[0]["image"], "data:image/jpeg;base64,CHARACTER");
+        assert_eq!(content[1]["image"], "data:image/png;base64,STYLE");
+        assert_eq!(content[2]["text"], "base prompt");
+    }
+
+    #[test]
+    fn wanxiang_base_body_with_references_rejects_legacy_models() {
+        let error = wanxiang_base_body_with_references(
+            "wanx2.1-t2i-turbo",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("wan2.6") || error.contains("wan2.7"));
     }
 
     #[test]

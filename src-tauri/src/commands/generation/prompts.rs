@@ -109,10 +109,36 @@ fn truncate_description(description: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_base_prompt, build_row_prompt};
+    use super::{
+        build_base_prompt, build_base_prompt_with_style_reference, build_row_prompt,
+    };
     use crate::commands::generation::types::{
         state_definition, state_definitions, SourceStyle, CANONICAL_FACING,
     };
+
+    #[test]
+    fn base_prompt_assigns_identity_to_image_one_and_style_to_image_two() {
+        let prompt = build_base_prompt_with_style_reference(
+            "a character",
+            SourceStyle::Realistic,
+            "#FF00FF",
+            "magenta",
+            true,
+        );
+
+        assert!(prompt.contains("image 1 is the original character identity reference"));
+        assert!(prompt.contains("image 2 is a pure style reference"));
+        assert!(prompt.contains("do not copy image 2's subject"));
+
+        let prompt_without_style = build_base_prompt_with_style_reference(
+            "a character",
+            SourceStyle::Realistic,
+            "#FF00FF",
+            "magenta",
+            false,
+        );
+        assert!(!prompt_without_style.contains("image 2 is a pure style reference"));
+    }
 
     #[test]
     fn realistic_source_style_requires_a_cute_two_dimensional_chibi_contract() {
