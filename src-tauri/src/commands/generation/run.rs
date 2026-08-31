@@ -1,7 +1,7 @@
 use super::sprite::CHROMA_KEY_CANDIDATES;
 use super::types::{
     state_definition, state_definitions, ArtifactRecord, ArtifactStatus, GenerationRunManifest,
-    DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    SourceStyle, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -116,6 +116,7 @@ pub fn create_run_at(
     run_id: impl Into<String>,
     provider: impl Into<String>,
     base_prompt: impl Into<String>,
+    source_style: SourceStyle,
 ) -> Result<GenerationRunManifest, String> {
     let run_id = run_id.into();
     let provider = provider.into();
@@ -135,6 +136,7 @@ pub fn create_run_at(
         DEFAULT_FRAME_COUNT,
         CHROMA_KEY_CANDIDATES[0].hex.to_string(),
         base_prompt,
+        source_style,
     );
     save_manifest(app_data_dir, &manifest)?;
     Ok(manifest)
@@ -333,6 +335,7 @@ pub fn discard_run_at(app_data_dir: &Path, run_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::generation::types::SourceStyle;
     use std::fs;
     use tempfile::TempDir;
 
@@ -342,6 +345,7 @@ mod tests {
             "run-1".to_string(),
             "siliconflow".to_string(),
             "a small orange fox".to_string(),
+            SourceStyle::Realistic,
         )
         .expect("create test run")
     }
@@ -361,6 +365,7 @@ mod tests {
         assert!(run.join("rows").is_dir());
         assert!(run.join("manifest.json").is_file());
         assert_eq!(manifest.base.path, "base.png");
+        assert_eq!(manifest.source_style, SourceStyle::Realistic);
         assert_eq!(manifest.states["idle"].path, "rows/idle.png");
         assert_eq!(manifest.states["acting_cute"].path, "rows/acting_cute.png");
         assert_eq!(manifest.states["working"].path, "rows/working.png");
@@ -371,6 +376,31 @@ mod tests {
         let manifest_json = fs::read_to_string(run.join("manifest.json")).unwrap();
         assert!(!manifest_json.contains("apiKey"));
         assert!(!manifest_json.contains("secret"));
+    }
+
+    #[test]
+    fn creating_an_existing_run_preserves_its_persisted_source_style() {
+        let temp = TempDir::new().unwrap();
+
+        let first = create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a small orange fox",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+        let loaded = create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a changed description",
+            SourceStyle::Stylized,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.source_style, SourceStyle::Realistic);
+        assert_eq!(loaded, first);
     }
 
     #[test]
@@ -392,6 +422,7 @@ mod tests {
                     run_id.to_string(),
                     "localsd".to_string(),
                     "pet".to_string(),
+                    SourceStyle::Stylized,
                 )
                 .is_err(),
                 "run id should be rejected: {run_id:?}"
@@ -504,6 +535,7 @@ mod tests {
             "run-2".to_string(),
             "localsd".to_string(),
             "another pet".to_string(),
+            SourceStyle::Stylized,
         )
         .unwrap();
         let pets = temp.path().join("pets").join("keep-me");

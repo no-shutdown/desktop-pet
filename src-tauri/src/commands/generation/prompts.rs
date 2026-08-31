@@ -1,30 +1,79 @@
-use super::types::StateDefinition;
+use super::types::{FrameVariation, SourceStyle, StateDefinition, CANONICAL_FACING};
 
-const BASE_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, shadow, glow, particles, detached effects, gradients, vignette, or key color inside the character";
-const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, column divider, slot outline, shadow, glow, particles, detached effects, motion blur, speed lines, dust, stray pixels, gradients, vignette, or key color inside the character";
+const BASE_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, enclosed background fragments, background-colored holes between hair/body parts, shadow, glow, halos, particles, detached effects, color spill, gradients, vignette, or key color inside the character";
+const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, column divider, slot outline, enclosed background fragments, background-colored holes between hair/body parts, shadow, glow, halos, particles, detached effects, color spill, motion blur, speed lines, dust, stray pixels, gradients, vignette, or key color inside the character";
 
-pub fn build_base_prompt(base_description: &str, chroma_hex: &str, chroma_name: &str) -> String {
+const STATIC_FRAME_CONTRACT: &str = "STATIC FRAME CONTRACT: all 8 columns are stable copies of the same static pose; keep the same static pose and do not force visible motion or differences between columns.";
+const ANIMATED_FRAME_CONTRACT: &str = "ANIMATED FRAME CONTRACT: the 8 columns MUST show 8 visibly DIFFERENT frames of the same continuous motion; each column is a distinct moment, frame 1 loops smoothly back to frame 8, and neighbouring columns change only by a small continuous increment.";
+const STATIC_REFERENCE_CONTRACT: &str = "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size; keep every column as a stable copy of that same static pose and do not replace it with a different motion frame.";
+const ANIMATED_REFERENCE_CONTRACT: &str = "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size; REPLACE each column with a distinct animation frame and do not preserve the reference pose in any column.";
+
+pub fn build_base_prompt(
+    base_description: &str,
+    source_style: SourceStyle,
+    chroma_hex: &str,
+    chroma_name: &str,
+) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
+    let style_contract = source_style_contract(source_style);
 
     format!(
-        "Create a game-ready canonical reference image for {description}. Render one centered complete full-body character in a neutral relaxed pose facing forward, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
+        "Create a game-ready canonical reference image for {description}. {style_contract} Render one centered complete full-body character in a neutral relaxed pose facing {CANONICAL_FACING}, occupying roughly 85% of the frame height with both feet planted on a shared ground line near the bottom of the canvas. This base image defines the identity source for every later animation frame: preserve the face, proportions, markings, palette, materials, clothing, accessories, and props exactly so future frames can reference it. Fill the entire canvas edge-to-edge with a single flat {chroma_name} chroma background ({chroma_hex}); no visible borders, dividers, gradients, or vignette; no cropped limbs. {BASE_NEGATIVE_EXCLUSIONS}. {chroma_exclusion}"
     )
 }
 
 pub fn build_row_prompt(
     base_description: &str,
+    source_style: SourceStyle,
     chroma_hex: &str,
     chroma_name: &str,
     state: &StateDefinition,
 ) -> String {
     let description = truncate_description(base_description);
     let chroma_exclusion = chroma_component_exclusion(chroma_hex);
+    let style_contract = source_style_contract(source_style);
+    let (intro, reference_contract, frame_contract, motion_contract) =
+        match state.frame_variation {
+            FrameVariation::Static => (
+                "Create an 8-frame sprite sheet",
+                STATIC_REFERENCE_CONTRACT,
+                STATIC_FRAME_CONTRACT,
+                "Keep the character, furniture, scale, baseline, and camera fixed across all columns with no visible motion.",
+            ),
+            FrameVariation::Animated => (
+                "Create an 8-frame sprite animation cycle",
+                ANIMATED_REFERENCE_CONTRACT,
+                ANIMATED_FRAME_CONTRACT,
+                "Keep the motion SMALL and CONTINUOUS: no big jumps between neighbouring frames, so the loop plays smoothly rather than as a slideshow of extreme poses.",
+            ),
+        };
+    let facing_exclusions = facing_exclusions(state);
 
     format!(
-        "Create an 8-frame sprite animation cycle of {description} performing this action: {}. Requirements: {}. The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size — REPLACE each column with a distinct animation frame; do not preserve the reference pose in any column. Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. The 8 columns MUST show 8 visibly DIFFERENT frames of the same continuous motion — each column is a distinct moment in the animation cycle so that frame 1 → frame 8 loops smoothly back to frame 1; do NOT output 8 identical or near-identical poses. Keep the motion SMALL and CONTINUOUS: between any two neighbouring columns the pose changes by only a small increment of the action (no big jumps between neighbour frames), so the loop plays smoothly rather than as a slideshow of extreme poses. Every frame is shot from the SAME fixed camera at the SAME zoom — the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames aside from the small in-place motion the action requires; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames beyond the small motion the action requires. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged; only the pose changes to advance the animation. FACING DIRECTION LOCK — the character faces {} in every single frame without exception; never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
-        state.action, state.requirements, state.facing, ROW_NEGATIVE_EXCLUSIONS, chroma_exclusion
+        "{intro} of {description} performing this action: {}. Requirements: {}. {style_contract} {reference_contract} Output an image exactly 2048 pixels wide by 256 pixels tall (8:1 aspect ratio) on a flat {chroma_name} chroma background ({chroma_hex}) filling every non-character pixel edge-to-edge. Split the canvas into 8 equal-width columns of 256 pixels each, arranged left-to-right; place exactly one complete full-body pose in each column, horizontally centered inside its column with equal empty margin on both sides; do not draw any column border, divider, grid, gap, or highlight between columns. {frame_contract} {motion_contract} Every frame is shot from the SAME fixed camera at the SAME zoom; the character's absolute horizontal and vertical position on the canvas is IDENTICAL across all 8 frames; the character MUST NOT drift, translate, or shift position between frames. All 8 frames share identical scale and feet (or seated hips) aligned to a single shared horizontal ground line at the same vertical position; do not shift the baseline between frames. Preserve identity across all 8 frames: face, proportions, markings, palette, materials, clothing, accessories, and props remain unchanged. FACING DIRECTION LOCK - the character faces {} in every single frame without exception; same camera, same body orientation, and same head orientation in every frame. {} Never mirror, flip, or reverse the body or head orientation between frames, not even partially. {}. {}",
+        state.action,
+        state.requirements,
+        state.facing,
+        facing_exclusions,
+        ROW_NEGATIVE_EXCLUSIONS,
+        chroma_exclusion
     )
+}
+
+fn source_style_contract(source_style: SourceStyle) -> &'static str {
+    match source_style {
+        SourceStyle::Realistic => "SOURCE STYLE CONTRACT: convert the realistic human photo into a cute 2D chibi character in a clean flat illustration style with rounded proportions, simplified shapes, and a charming approachable expression. No photorealistic rendering, no 3D render, no CGI, no realistic skin pores, no plastic materials, and no cinematic lighting.",
+        SourceStyle::Stylized => "SOURCE STYLE CONTRACT: preserve the original art style and source medium of the reference artwork. Preserve its line quality, proportions, palette, shading, and texture, including its existing cartoon, anime, illustration, or pixel art treatment. Do not restyle, re-render, or convert the artwork into a different medium; no 3D or CGI restyling.",
+    }
+}
+
+fn facing_exclusions(state: &StateDefinition) -> &'static str {
+    if state.key == "sleeping" {
+        "Keep the character front-facing. No mirror, no flip, no turn, no side turn, and no partial reversal of the body or head."
+    } else {
+        "Keep the character front-facing. No mirror, no flip, no turn, no side turn, no three-quarter change, and no partial reversal of the body or head."
+    }
 }
 
 fn chroma_component_exclusion(chroma_hex: &str) -> String {
@@ -50,11 +99,138 @@ fn truncate_description(description: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{build_base_prompt, build_row_prompt};
-    use crate::commands::generation::types::{state_definition, state_definitions};
+    use crate::commands::generation::types::{
+        state_definition, state_definitions, SourceStyle, CANONICAL_FACING,
+    };
+
+    #[test]
+    fn realistic_source_style_requires_a_cute_two_dimensional_chibi_contract() {
+        let realistic = build_base_prompt(
+            "a person with black hair",
+            SourceStyle::Realistic,
+            "#FF00FF",
+            "magenta",
+        )
+        .to_lowercase();
+
+        for term in [
+            "2d",
+            "chibi",
+            "cute",
+            "flat illustration",
+            "no photorealistic",
+            "no 3d",
+            "no cgi",
+        ] {
+            assert!(realistic.contains(term), "missing realistic term: {term}");
+        }
+    }
+
+    #[test]
+    fn stylized_source_style_preserves_the_original_art_medium_and_quality() {
+        let stylized = build_base_prompt(
+            "a pixel-art orange fox",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+        )
+        .to_lowercase();
+
+        for term in ["preserve the original art style", "line quality", "pixel art", "no 3d"] {
+            assert!(stylized.contains(term), "missing stylized term: {term}");
+        }
+        assert!(stylized.contains("do not restyle"));
+    }
+
+    #[test]
+    fn every_state_uses_the_canonical_facing_without_sleeping_three_quarter_view() {
+        for state in state_definitions() {
+            assert_eq!(state.facing, CANONICAL_FACING, "non-canonical state: {}", state.key);
+            let prompt = build_row_prompt(
+                "a canonical pet",
+                SourceStyle::Stylized,
+                "#FF00FF",
+                "magenta",
+                state,
+            )
+            .to_lowercase();
+            assert!(prompt.contains("facing direction lock"));
+            assert!(prompt.contains("no mirror"));
+            assert!(prompt.contains("no flip"));
+            assert!(prompt.contains("no side turn"));
+            assert!(prompt.contains("no partial reversal"));
+            if state.key == "sleeping" {
+                assert!(!prompt.contains("three-quarter"));
+            } else {
+                assert!(prompt.contains("no three-quarter change"));
+            }
+        }
+    }
+
+    #[test]
+    fn idle_prompt_requests_a_static_standing_hold_without_breathing_or_blinking() {
+        let state = state_definition("idle").unwrap();
+        let prompt = build_row_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state,
+        )
+        .to_lowercase();
+
+        for term in ["static", "same static pose", "no breathing", "no blinking"] {
+            assert!(prompt.contains(term), "missing term: {term}");
+        }
+
+        for term in [
+            "breathing loop",
+            "chest rises",
+            "brief eye blink",
+            "8 visibly different frames",
+        ] {
+            assert!(!prompt.contains(term), "unexpected term: {term}");
+        }
+    }
+
+    #[test]
+    fn working_prompt_requires_a_complete_open_laptop_on_a_fixed_desk() {
+        let state = state_definition("working").unwrap();
+        let prompt = build_row_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state,
+        )
+        .to_lowercase();
+
+        for term in [
+            "open laptop computer",
+            "hinged screen panel",
+            "keyboard deck",
+            "both hands type",
+            "same desk geometry",
+            "standalone keyboard",
+            "keyboard-only",
+            "tablet",
+            "closed laptop",
+            "lap-held",
+            "held device",
+            "independent monitor",
+        ] {
+            assert!(prompt.contains(term), "missing working term: {term}");
+        }
+    }
 
     #[test]
     fn base_prompt_preserves_identity_and_forbids_production_artifacts() {
-        let prompt = build_base_prompt("a tiny orange fox with a blue scarf", "#FF00FF", "magenta");
+        let prompt = build_base_prompt(
+            "a tiny orange fox with a blue scarf",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+        );
 
         for term in [
             "tiny orange fox with a blue scarf",
@@ -106,7 +282,7 @@ mod tests {
     #[test]
     fn base_prompt_truncates_description_on_a_utf8_boundary() {
         let description = format!("{}终点", "a".repeat(299));
-        let prompt = build_base_prompt(&description, "#FF00FF", "magenta");
+        let prompt = build_base_prompt(&description, SourceStyle::Stylized, "#FF00FF", "magenta");
 
         assert!(prompt.contains(&"a".repeat(299)));
         assert!(!prompt.contains("终点"));
@@ -117,6 +293,7 @@ mod tests {
         let state = state_definition("acting_cute").unwrap();
         let prompt = build_row_prompt(
             "a tiny orange fox with a blue scarf",
+            SourceStyle::Stylized,
             "#00FFFF",
             "cyan",
             state,
@@ -170,7 +347,13 @@ mod tests {
     #[test]
     fn row_prompt_includes_each_catalog_state_action_and_requirements() {
         for state in state_definitions() {
-            let prompt = build_row_prompt("a canonical pet", "#FF00FF", "magenta", state);
+            let prompt = build_row_prompt(
+                "a canonical pet",
+                SourceStyle::Stylized,
+                "#FF00FF",
+                "magenta",
+                state,
+            );
             assert!(
                 prompt.contains(state.action),
                 "missing action for {}",

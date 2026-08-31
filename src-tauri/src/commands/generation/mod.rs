@@ -34,7 +34,7 @@ use self::sprite::{
 };
 use self::types::{
     state_definition, state_definitions, ArtifactStatus, GenerationRunManifest, ProviderConfig,
-    StateDefinition, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    SourceStyle, StateDefinition, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
 };
 
 const DEFAULT_BASE_MODEL: &str = "Tongyi-MAI/Z-Image-Turbo";
@@ -83,6 +83,37 @@ fn provider_name(provider: &str) -> Result<String, String> {
     match provider {
         "siliconflow" | "wanxiang" | "localsd" | "local_sd" => Ok(provider.to_string()),
         _ => Err(format!("unsupported image provider: {provider}")),
+    }
+}
+
+fn source_style(value: Option<&str>) -> Result<SourceStyle, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(SourceStyle::Stylized),
+        Some("realistic") => Ok(SourceStyle::Realistic),
+        Some("stylized") => Ok(SourceStyle::Stylized),
+        Some(value) => Err(format!("unsupported source style: {value}")),
+    }
+}
+
+#[cfg(test)]
+mod source_style_parser_tests {
+    use super::source_style;
+    use crate::commands::generation::types::SourceStyle;
+
+    #[test]
+    fn source_style_parser_defaults_and_accepts_supported_values() {
+        assert_eq!(source_style(None).unwrap(), SourceStyle::Stylized);
+        assert_eq!(source_style(Some(" ")).unwrap(), SourceStyle::Stylized);
+        assert_eq!(source_style(Some("realistic")).unwrap(), SourceStyle::Realistic);
+        assert_eq!(source_style(Some(" stylized ")).unwrap(), SourceStyle::Stylized);
+    }
+
+    #[test]
+    fn source_style_parser_rejects_unknown_values() {
+        assert_eq!(
+            source_style(Some("three-dimensional")).unwrap_err(),
+            "unsupported source style: three-dimensional"
+        );
     }
 }
 
@@ -375,9 +406,11 @@ pub async fn generate_base_preview(
     reference_model: Option<String>,
     local_sd_url: Option<String>,
     denoising_strength: Option<f32>,
+    source_style: Option<String>,
 ) -> Result<BasePreviewResult, String> {
     let data_dir = app_data_dir(&app)?;
     let provider = provider_name(&image_provider)?;
+    let source_style = self::source_style(source_style.as_deref())?;
     let reference = reference_data_url
         .as_deref()
         .map(decode_reference_image)
@@ -389,16 +422,23 @@ pub async fn generate_base_preview(
         run_id.clone(),
         provider.clone(),
         base_prompt.clone(),
+        source_style,
     )?;
     if manifest.provider != provider {
         return Err("generation run provider cannot be changed during a retry".to_string());
     }
     manifest.base_prompt = base_prompt;
+    manifest.source_style = source_style;
     manifest.chroma_key = selected_key.hex.to_string();
     save_manifest(&data_dir, &manifest)?;
     begin_base(&data_dir, &run_id)?;
 
-    let prompt = build_base_prompt(&manifest.base_prompt, selected_key.hex, selected_key.name);
+    let prompt = build_base_prompt(
+        &manifest.base_prompt,
+        manifest.source_style,
+        selected_key.hex,
+        selected_key.name,
+    );
     let config = provider_config(
         provider,
         image_api_key.clone(),
@@ -462,6 +502,7 @@ pub async fn generate_state_row(
 
     let prompt = build_row_prompt(
         &manifest.base_prompt,
+        manifest.source_style,
         selected_key.hex,
         selected_key.name,
         state_definition,
@@ -765,8 +806,8 @@ mod command_tests {
     use super::run_dir;
     use super::sprite::CHROMA_KEY_CANDIDATES;
     use super::types::{
-        state_definitions, ArtifactStatus, GenerationRunManifest, DEFAULT_FRAME_COUNT, FRAME_H,
-        FRAME_W,
+        state_definitions, ArtifactStatus, GenerationRunManifest, SourceStyle, DEFAULT_FRAME_COUNT,
+        FRAME_H, FRAME_W,
     };
     use super::{
         assemble_preview_rows, assemble_run_preview_at, chroma_key_for_manifest,
@@ -826,6 +867,7 @@ mod command_tests {
             "run-1".to_string(),
             "siliconflow".to_string(),
             "a small orange fox".to_string(),
+            SourceStyle::Realistic,
         )
         .unwrap();
         (temp, manifest)
@@ -929,7 +971,14 @@ mod command_tests {
     #[test]
     fn base_provider_failure_marks_only_base_failed_with_bounded_error_and_no_pets() {
         let temp = TempDir::new().unwrap();
-        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "pet",
+            SourceStyle::Stylized,
+        )
+        .unwrap();
         super::mark_base_generating(temp.path(), "run-1").unwrap();
         let provider_error = format!("{}secret-key", "provider failure ".repeat(80));
 
@@ -952,7 +1001,14 @@ mod command_tests {
     #[test]
     fn row_provider_failure_marks_only_requested_state_and_keeps_completed_rows() {
         let temp = TempDir::new().unwrap();
-        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "pet",
+            SourceStyle::Stylized,
+        )
+        .unwrap();
         super::mark_base_generating(temp.path(), "run-1").unwrap();
         super::mark_base_complete(temp.path(), "run-1").unwrap();
         super::mark_state_generating(temp.path(), "run-1", "idle").unwrap();
@@ -978,7 +1034,14 @@ mod command_tests {
     #[test]
     fn row_processing_uses_manifest_chroma_key_and_writes_only_the_run_row() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        let mut manifest = create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "pet",
+            SourceStyle::Stylized,
+        )
+        .unwrap();
         manifest.chroma_key = "#00FFFF".to_string();
         super::save_manifest(temp.path(), &manifest).unwrap();
         super::mark_base_generating(temp.path(), "run-1").unwrap();
@@ -1015,7 +1078,14 @@ mod command_tests {
     #[test]
     fn assembly_at_loads_four_complete_rows_without_creating_pets() {
         let temp = TempDir::new().unwrap();
-        create_run_at(temp.path(), "run-1", "siliconflow", "pet").unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "pet",
+            SourceStyle::Stylized,
+        )
+        .unwrap();
         super::mark_base_generating(temp.path(), "run-1").unwrap();
         super::mark_base_complete(temp.path(), "run-1").unwrap();
         for (index, state) in state_definitions().iter().enumerate() {
