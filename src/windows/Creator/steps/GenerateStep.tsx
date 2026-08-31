@@ -11,7 +11,7 @@ import {
   type AppSettings,
   type ImageProvider,
 } from '../../../lib/settings';
-import type { GenerationProvider } from './types';
+import type { GenerationProvider, SourceStyle } from './types';
 
 interface BasePreviewResult {
   runId: string;
@@ -29,6 +29,7 @@ interface GenerationProgress {
 interface GenerateStepProps {
   prompt: string;
   referenceDataUrl?: string | null;
+  sourceStyle: SourceStyle;
   runId?: string;
   onNext: (base: { runId: string; dataUrl: string }) => void;
   onBack: () => void;
@@ -78,6 +79,7 @@ function messageFromError(error: unknown): string {
 export default function GenerateStep({
   prompt,
   referenceDataUrl,
+  sourceStyle,
   runId,
   onNext,
   onBack,
@@ -162,6 +164,7 @@ export default function GenerateStep({
         referenceModel: settings.imageReferenceModel || null,
         localSdUrl: settings.localSdUrl || null,
         denoisingStrength: settings.localSdDenoisingStrength,
+        sourceStyle,
       });
       if (!mountedRef.current) return;
       setPreview(result);

@@ -3,6 +3,7 @@ import type { PetState, SpriteStateInfo } from '../../../types/pet';
 export type GenerationProvider = 'siliconflow' | 'wanxiang' | 'localsd';
 export type GenerationPhase = 'base' | 'state' | 'assemble';
 export type GenerationStatus = 'pending' | 'generating' | 'complete' | 'failed';
+export type SourceStyle = 'realistic' | 'stylized';
 
 export interface GenerationRunPreview {
   runId: string;
@@ -29,6 +30,7 @@ export interface GeneratedSpriteConfig {
 export interface WizardData {
   photoDataUrl: string | null;
   prompt: string;
+  sourceStyle: SourceStyle;
   apiKey: string;
   petId: string | null;
   petName: string;
@@ -42,6 +44,7 @@ export interface WizardData {
 export const INITIAL_WIZARD_DATA: WizardData = {
   photoDataUrl: null,
   prompt: '',
+  sourceStyle: 'realistic',
   apiKey: '',
   petId: null,
   petName: '',

@@ -47,6 +47,7 @@ describe('GenerateStep', () => {
   const defaultProps = {
     prompt: 'anime chibi girl',
     referenceDataUrl: 'data:image/jpeg;base64,REF',
+    sourceStyle: 'realistic' as const,
     onNext: vi.fn(),
     onBack: vi.fn(),
   };
@@ -77,6 +78,7 @@ describe('GenerateStep', () => {
         referenceModel: 'reference-model',
         localSdUrl: 'http://localhost:7860',
         denoisingStrength: 0.55,
+        sourceStyle: 'realistic',
       });
     });
 

@@ -184,9 +184,11 @@ export default function CreatorWindow() {
             <AnalyzeStep
               photoDataUrl={data.photoDataUrl}
               initialPrompt={data.prompt}
-              onNext={(prompt) => {
+              initialSourceStyle={data.sourceStyle}
+              onNext={(prompt, sourceStyle) => {
                 updateData({
                   prompt,
+                  sourceStyle,
                   generationRunId: data.generationRunId ?? makeGenerationRunId(),
                   baseDataUrl: null,
                   generatedDataUrl: null,
@@ -202,6 +204,7 @@ export default function CreatorWindow() {
             <GenerateStep
               prompt={data.prompt}
               referenceDataUrl={data.photoDataUrl}
+              sourceStyle={data.sourceStyle}
               runId={data.generationRunId ?? undefined}
               onBusyChange={setGenerationBusy}
               onNext={({ runId, dataUrl }) => {

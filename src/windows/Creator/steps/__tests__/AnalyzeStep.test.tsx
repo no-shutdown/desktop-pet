@@ -47,6 +47,22 @@ describe('AnalyzeStep', () => {
     expect(screen.getByRole('textbox', { name: /character description/i })).toBeTruthy();
   });
 
+  it('lets the user choose realistic-photo conversion or preserve stylized art', () => {
+    render(<AnalyzeStep {...defaultProps} />);
+
+    const realisticRadio = screen.getByRole('radio', { name: /realistic/i }) as HTMLInputElement;
+    expect(realisticRadio).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /stylized/i })).toBeTruthy();
+    expect(realisticRadio.checked).toBe(true);
+  });
+
+  it('initializes the source style from the optional initial value', () => {
+    render(<AnalyzeStep {...defaultProps} initialSourceStyle="stylized" />);
+
+    expect((screen.getByRole('radio', { name: /stylized/i }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: /realistic/i }) as HTMLInputElement).checked).toBe(false);
+  });
+
   it('Analyze button calls analyzePhoto with correct args', async () => {
     render(<AnalyzeStep {...defaultProps} />);
     fireEvent.click(screen.getByRole('button', { name: /AI 分析照片/ }));
@@ -70,7 +86,19 @@ describe('AnalyzeStep', () => {
     const textarea = screen.getByRole('textbox', { name: /character description/i });
     fireEvent.change(textarea, { target: { value: 'my custom prompt' } });
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
-    expect(onNext).toHaveBeenCalledWith('my custom prompt');
+    expect(onNext).toHaveBeenCalledWith('my custom prompt', 'realistic');
+  });
+
+  it('passes the selected source style with the description', () => {
+    const onNext = vi.fn();
+    render(<AnalyzeStep {...defaultProps} onNext={onNext} />);
+    fireEvent.change(screen.getByRole('textbox', { name: /character description/i }), {
+      target: { value: 'pink cartoon character' },
+    });
+    fireEvent.click(screen.getByRole('radio', { name: /stylized/i }));
+    fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
+
+    expect(onNext).toHaveBeenCalledWith('pink cartoon character', 'stylized');
   });
 
   it('Next button is disabled when prompt is empty', () => {

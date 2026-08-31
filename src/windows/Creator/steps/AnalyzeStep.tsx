@@ -5,11 +5,13 @@ import {
   type VisionProvider,
 } from '../../../lib/settings';
 import { analyzePhotoWithSettings } from '../../../lib/vision';
+import type { SourceStyle } from './types';
 
 interface AnalyzeStepProps {
   photoDataUrl: string;
   initialPrompt: string;
-  onNext: (prompt: string) => void;
+  initialSourceStyle?: SourceStyle;
+  onNext: (prompt: string, sourceStyle: SourceStyle) => void;
   onBack: () => void;
 }
 
@@ -20,8 +22,20 @@ const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] =
   { value: 'kimi',      label: 'Kimi（月之暗面）',  desc: 'moonshot 视觉模型' },
 ];
 
-export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBack }: AnalyzeStepProps) {
+const SOURCE_STYLE_OPTIONS: { value: SourceStyle; label: string; desc: string }[] = [
+  { value: 'realistic', label: 'Realistic person photo', desc: 'Convert to a cute 2D chibi character' },
+  { value: 'stylized', label: 'Stylized artwork', desc: 'Preserve the original art style' },
+];
+
+export default function AnalyzeStep({
+  photoDataUrl,
+  initialPrompt,
+  initialSourceStyle,
+  onNext,
+  onBack,
+}: AnalyzeStepProps) {
   const [prompt, setPrompt] = useState(initialPrompt);
+  const [sourceStyle, setSourceStyle] = useState<SourceStyle>(initialSourceStyle ?? 'realistic');
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState(loadSettings);
@@ -64,6 +78,29 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
         />
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Source image style
+            </p>
+            {SOURCE_STYLE_OPTIONS.map(({ value, label, desc }) => (
+              <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="sourceStyle"
+                  value={value}
+                  aria-label={label}
+                  checked={sourceStyle === value}
+                  onChange={() => setSourceStyle(value)}
+                  style={{ marginTop: 3, accentColor: '#4f8ef7' }}
+                />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#2d3748' }}>{label}</div>
+                  <div style={{ fontSize: 11, color: '#a0aec0' }}>{desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
           <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             视觉分析服务
           </p>
@@ -156,7 +193,7 @@ export default function AnalyzeStep({ photoDataUrl, initialPrompt, onNext, onBac
           上一步
         </button>
         <button
-          onClick={() => onNext(prompt)}
+          onClick={() => onNext(prompt, sourceStyle)}
           disabled={!prompt.trim()}
           style={{
             padding: '8px 24px', borderRadius: 6, border: 'none',
