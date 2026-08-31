@@ -196,7 +196,10 @@ export default function CreatorWindow() {
                 });
                 setStep('base-generate');
               }}
-              onBack={() => setStep('upload')}
+              onBack={(sourceStyle) => {
+                updateData({ sourceStyle });
+                setStep('upload');
+              }}
             />
           )}
 

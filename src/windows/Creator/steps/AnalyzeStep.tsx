@@ -12,7 +12,7 @@ interface AnalyzeStepProps {
   initialPrompt: string;
   initialSourceStyle?: SourceStyle;
   onNext: (prompt: string, sourceStyle: SourceStyle) => void;
-  onBack: () => void;
+  onBack: (sourceStyle: SourceStyle) => void;
 }
 
 const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] = [
@@ -78,10 +78,10 @@ export default function AnalyzeStep({
         />
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <legend style={{ padding: 0, margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Source image style
-            </p>
+            </legend>
             {SOURCE_STYLE_OPTIONS.map(({ value, label, desc }) => (
               <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
                 <input
@@ -99,7 +99,7 @@ export default function AnalyzeStep({
                 </div>
               </label>
             ))}
-          </div>
+          </fieldset>
 
           <p style={{ margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             视觉分析服务
@@ -187,7 +187,7 @@ export default function AnalyzeStep({
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
         <button
-          onClick={onBack}
+          onClick={() => onBack(sourceStyle)}
           style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: 'pointer' }}
         >
           上一步

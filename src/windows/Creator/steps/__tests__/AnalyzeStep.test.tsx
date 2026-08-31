@@ -56,6 +56,12 @@ describe('AnalyzeStep', () => {
     expect(realisticRadio.checked).toBe(true);
   });
 
+  it('groups source style choices under an accessible fieldset', () => {
+    render(<AnalyzeStep {...defaultProps} />);
+
+    expect(screen.getByRole('group', { name: /source image style/i })).toBeTruthy();
+  });
+
   it('initializes the source style from the optional initial value', () => {
     render(<AnalyzeStep {...defaultProps} initialSourceStyle="stylized" />);
 
@@ -112,5 +118,15 @@ describe('AnalyzeStep', () => {
     render(<AnalyzeStep {...defaultProps} onBack={onBack} />);
     fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
     expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it('passes the current source style to onBack before leaving', () => {
+    const onBack = vi.fn();
+    render(<AnalyzeStep {...defaultProps} onBack={onBack} />);
+
+    fireEvent.click(screen.getByRole('radio', { name: /stylized/i }));
+    fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
+
+    expect(onBack).toHaveBeenCalledWith('stylized');
   });
 });
