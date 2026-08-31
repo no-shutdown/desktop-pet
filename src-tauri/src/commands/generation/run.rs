@@ -404,6 +404,25 @@ mod tests {
     }
 
     #[test]
+    fn load_manifest_defaults_missing_source_style_from_disk_without_rewriting_it() {
+        let temp = TempDir::new().unwrap();
+        let manifest = create_test_run(&temp);
+        let path = manifest_path(temp.path(), "run-1").unwrap();
+        let mut legacy = serde_json::to_value(&manifest).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceStyle");
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = load_manifest(temp.path(), "run-1").unwrap();
+
+        assert_eq!(loaded.source_style, SourceStyle::Stylized);
+        let disk = fs::read_to_string(path).unwrap();
+        assert!(!disk.contains("sourceStyle"));
+    }
+
+    #[test]
     fn rejects_run_id_path_traversal_and_non_single_component_paths() {
         let temp = TempDir::new().unwrap();
 

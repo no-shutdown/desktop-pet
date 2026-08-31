@@ -86,12 +86,21 @@ fn provider_name(provider: &str) -> Result<String, String> {
     }
 }
 
-fn source_style(value: Option<&str>) -> Result<SourceStyle, String> {
+fn source_style(value: Option<&str>) -> Result<Option<SourceStyle>, String> {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(SourceStyle::Stylized),
-        Some("realistic") => Ok(SourceStyle::Realistic),
-        Some("stylized") => Ok(SourceStyle::Stylized),
+        None => Ok(None),
+        Some("realistic") => Ok(Some(SourceStyle::Realistic)),
+        Some("stylized") => Ok(Some(SourceStyle::Stylized)),
         Some(value) => Err(format!("unsupported source style: {value}")),
+    }
+}
+
+fn apply_source_style_update(
+    manifest: &mut GenerationRunManifest,
+    requested_source_style: Option<SourceStyle>,
+) {
+    if let Some(source_style) = requested_source_style {
+        manifest.source_style = source_style;
     }
 }
 
@@ -101,11 +110,17 @@ mod source_style_parser_tests {
     use crate::commands::generation::types::SourceStyle;
 
     #[test]
-    fn source_style_parser_defaults_and_accepts_supported_values() {
-        assert_eq!(source_style(None).unwrap(), SourceStyle::Stylized);
-        assert_eq!(source_style(Some(" ")).unwrap(), SourceStyle::Stylized);
-        assert_eq!(source_style(Some("realistic")).unwrap(), SourceStyle::Realistic);
-        assert_eq!(source_style(Some(" stylized ")).unwrap(), SourceStyle::Stylized);
+    fn source_style_parser_distinguishes_omitted_from_explicit_values() {
+        assert_eq!(source_style(None).unwrap(), None);
+        assert_eq!(source_style(Some(" ")).unwrap(), None);
+        assert_eq!(
+            source_style(Some("realistic")).unwrap(),
+            Some(SourceStyle::Realistic)
+        );
+        assert_eq!(
+            source_style(Some(" stylized ")).unwrap(),
+            Some(SourceStyle::Stylized)
+        );
     }
 
     #[test]
@@ -113,6 +128,64 @@ mod source_style_parser_tests {
         assert_eq!(
             source_style(Some("three-dimensional")).unwrap_err(),
             "unsupported source style: three-dimensional"
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_style_merge_tests {
+    use super::run::{create_run_at, load_manifest, manifest_path, save_manifest};
+    use super::types::SourceStyle;
+    use super::{apply_source_style_update, source_style};
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn retry_source_style_merge_preserves_disk_style_and_updates_only_when_explicit() {
+        let temp = TempDir::new().unwrap();
+        create_run_at(
+            temp.path(),
+            "run-1",
+            "siliconflow",
+            "a canonical pet",
+            SourceStyle::Realistic,
+        )
+        .unwrap();
+
+        let mut existing = load_manifest(temp.path(), "run-1").unwrap();
+        apply_source_style_update(&mut existing, source_style(None).unwrap());
+        save_manifest(temp.path(), &existing).unwrap();
+        assert_eq!(
+            load_manifest(temp.path(), "run-1").unwrap().source_style,
+            SourceStyle::Realistic
+        );
+
+        let path = manifest_path(temp.path(), "run-1").unwrap();
+        let mut legacy = serde_json::to_value(&existing).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceStyle");
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let mut legacy_manifest = load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(legacy_manifest.source_style, SourceStyle::Stylized);
+        apply_source_style_update(&mut legacy_manifest, source_style(None).unwrap());
+        save_manifest(temp.path(), &legacy_manifest).unwrap();
+        assert_eq!(
+            load_manifest(temp.path(), "run-1").unwrap().source_style,
+            SourceStyle::Stylized
+        );
+
+        let mut explicit = load_manifest(temp.path(), "run-1").unwrap();
+        apply_source_style_update(
+            &mut explicit,
+            source_style(Some("realistic")).unwrap(),
+        );
+        save_manifest(temp.path(), &explicit).unwrap();
+        assert_eq!(
+            load_manifest(temp.path(), "run-1").unwrap().source_style,
+            SourceStyle::Realistic
         );
     }
 }
@@ -410,7 +483,7 @@ pub async fn generate_base_preview(
 ) -> Result<BasePreviewResult, String> {
     let data_dir = app_data_dir(&app)?;
     let provider = provider_name(&image_provider)?;
-    let source_style = self::source_style(source_style.as_deref())?;
+    let requested_source_style = self::source_style(source_style.as_deref())?;
     let reference = reference_data_url
         .as_deref()
         .map(decode_reference_image)
@@ -422,13 +495,13 @@ pub async fn generate_base_preview(
         run_id.clone(),
         provider.clone(),
         base_prompt.clone(),
-        source_style,
+        requested_source_style.unwrap_or_default(),
     )?;
     if manifest.provider != provider {
         return Err("generation run provider cannot be changed during a retry".to_string());
     }
     manifest.base_prompt = base_prompt;
-    manifest.source_style = source_style;
+    apply_source_style_update(&mut manifest, requested_source_style);
     manifest.chroma_key = selected_key.hex.to_string();
     save_manifest(&data_dir, &manifest)?;
     begin_base(&data_dir, &run_id)?;
