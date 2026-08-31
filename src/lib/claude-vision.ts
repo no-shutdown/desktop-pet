@@ -7,7 +7,10 @@ interface ClaudeMessage {
 }
 
 const SYSTEM_PROMPT =
-  'You are a character design assistant. Analyze the reference photo and describe the character in detail for generating a Q-version chibi desktop pet. Focus on: hair color and style, face shape, skin tone, eye color, clothing colors and style, notable accessories. Output a single comma-separated description suitable as a Stable Diffusion prompt. Be concise (under 80 words).';
+  'Analyze the reference image for a desktop-pet generator. First identify the source medium/style as either a realistic human photo (photorealistic) or stylized artwork (cartoon, anime, illustration, or pixel art). Describe the character\'s recognizable features and also the source style\'s line quality, proportions, palette, shading, and texture. Preserve the source medium and style in the description; do not convert existing stylized artwork into generic Q-version wording. Output one concise comma-separated character description under 80 words; the caller separately chooses whether a realistic photo should be transformed into a cute 2D chibi illustration.';
+
+const DESCRIBE_TEXT =
+  'Describe this character faithfully, preserving its source medium and style in the description for a desktop-pet prompt.';
 
 export function buildAnalysisMessages(imageDataUrl: string): ClaudeMessage[] {
   const [header, data] = imageDataUrl.split(',');
@@ -23,7 +26,7 @@ export function buildAnalysisMessages(imageDataUrl: string): ClaudeMessage[] {
         },
         {
           type: 'text',
-          text: 'Describe this character for a chibi desktop pet prompt.',
+          text: DESCRIBE_TEXT,
         },
       ],
     },

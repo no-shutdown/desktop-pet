@@ -17,6 +17,26 @@ describe('claude-vision', () => {
     expect(content.some((c) => c.type === 'text')).toBe(true);
   });
 
+  it('asks vision analysis to identify and preserve the input medium', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'stylized cartoon, orange fox' }] }),
+    });
+
+    await analyzePhoto('data:image/jpeg;base64,abc123', 'sk-ant-test');
+    const request = mockFetch.mock.calls[0][1] as { body: string };
+    const body = JSON.parse(request.body) as {
+      system: string;
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const userText = body.messages[0].content.find((item) => item.type === 'text')?.text ?? '';
+    const instruction = `${body.system} ${userText}`.toLowerCase();
+
+    expect(instruction).toContain('source style');
+    expect(instruction).toContain('preserve');
+    expect(instruction).toContain('photorealistic');
+  });
+
   it('analyzePhoto calls Anthropic API with correct headers', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
