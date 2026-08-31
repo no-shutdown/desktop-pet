@@ -23,8 +23,8 @@ const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] =
 ];
 
 const SOURCE_STYLE_OPTIONS: { value: SourceStyle; label: string; desc: string }[] = [
-  { value: 'realistic', label: 'Realistic person photo', desc: 'Convert to a cute 2D chibi character' },
-  { value: 'stylized', label: 'Stylized artwork', desc: 'Preserve the original art style' },
+  { value: 'realistic', label: '真实人物照片', desc: '转换为可爱的 2D Q 版形象' },
+  { value: 'stylized', label: '卡通 / 插画作品', desc: '保留原始画风' },
 ];
 
 export default function AnalyzeStep({
@@ -80,7 +80,7 @@ export default function AnalyzeStep({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <fieldset style={{ border: 0, padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <legend style={{ padding: 0, margin: 0, fontSize: 12, color: '#718096', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Source image style
+              参考图风格
             </legend>
             {SOURCE_STYLE_OPTIONS.map(({ value, label, desc }) => (
               <label key={value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>

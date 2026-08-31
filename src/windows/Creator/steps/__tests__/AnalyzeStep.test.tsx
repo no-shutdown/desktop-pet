@@ -47,26 +47,29 @@ describe('AnalyzeStep', () => {
     expect(screen.getByRole('textbox', { name: /character description/i })).toBeTruthy();
   });
 
-  it('lets the user choose realistic-photo conversion or preserve stylized art', () => {
+  it('shows Chinese labels for the source style choices', () => {
     render(<AnalyzeStep {...defaultProps} />);
 
-    const realisticRadio = screen.getByRole('radio', { name: /realistic/i }) as HTMLInputElement;
+    const realisticRadio = screen.getByRole('radio', { name: /真实人物照片/ }) as HTMLInputElement;
     expect(realisticRadio).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /stylized/i })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /卡通 \/ 插画作品/ })).toBeTruthy();
+    expect(screen.getByText('参考图风格')).toBeTruthy();
+    expect(screen.getByText('转换为可爱的 2D Q 版形象')).toBeTruthy();
+    expect(screen.getByText('保留原始画风')).toBeTruthy();
     expect(realisticRadio.checked).toBe(true);
   });
 
   it('groups source style choices under an accessible fieldset', () => {
     render(<AnalyzeStep {...defaultProps} />);
 
-    expect(screen.getByRole('group', { name: /source image style/i })).toBeTruthy();
+    expect(screen.getByRole('group', { name: /参考图风格/ })).toBeTruthy();
   });
 
   it('initializes the source style from the optional initial value', () => {
     render(<AnalyzeStep {...defaultProps} initialSourceStyle="stylized" />);
 
-    expect((screen.getByRole('radio', { name: /stylized/i }) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('radio', { name: /realistic/i }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('radio', { name: /卡通 \/ 插画作品/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: /真实人物照片/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('Analyze button calls analyzePhoto with correct args', async () => {
@@ -101,7 +104,7 @@ describe('AnalyzeStep', () => {
     fireEvent.change(screen.getByRole('textbox', { name: /character description/i }), {
       target: { value: 'pink cartoon character' },
     });
-    fireEvent.click(screen.getByRole('radio', { name: /stylized/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /卡通 \/ 插画作品/ }));
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
 
     expect(onNext).toHaveBeenCalledWith('pink cartoon character', 'stylized');
@@ -124,7 +127,7 @@ describe('AnalyzeStep', () => {
     const onBack = vi.fn();
     render(<AnalyzeStep {...defaultProps} onBack={onBack} />);
 
-    fireEvent.click(screen.getByRole('radio', { name: /stylized/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /卡通 \/ 插画作品/ }));
     fireEvent.click(screen.getByRole('button', { name: /上一步/ }));
 
     expect(onBack).toHaveBeenCalledWith('stylized');
