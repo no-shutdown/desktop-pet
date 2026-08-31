@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 const { mockInvoke, mockListen, mockSaveSettings } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
@@ -64,6 +64,10 @@ describe('GenerateStep', () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('calls generate_base_preview with the current backend payload', async () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
 
@@ -101,10 +105,15 @@ describe('GenerateStep', () => {
   it('reads, previews, and removes a style reference image', () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
     const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const file = new File(['fake'], 'style.png', { type: 'image/png' });
     Object.defineProperty(input, 'files', {
-      value: [new File(['fake'], 'style.png', { type: 'image/png' })],
+      value: [file],
     });
-    let reader: { onload: ((event: ProgressEvent) => void) | null; result: string } | null = null;
+    let reader: {
+      onload: ((event: ProgressEvent) => void) | null;
+      result: string;
+      readAsDataURL: ReturnType<typeof vi.fn>;
+    } | null = null;
     class MockFileReader {
       onload: ((event: ProgressEvent) => void) | null = null;
       result = 'data:image/png;base64,STYLE';
@@ -114,7 +123,11 @@ describe('GenerateStep', () => {
     vi.stubGlobal('FileReader', MockFileReader);
 
     fireEvent.change(input);
-    reader?.onload?.({ target: reader } as unknown as ProgressEvent);
+    expect(reader).not.toBeNull();
+    expect(reader!.readAsDataURL).toHaveBeenCalledWith(file);
+    act(() => {
+      reader?.onload?.({ target: reader } as unknown as ProgressEvent);
+    });
     expect(screen.getByAltText('风格参考图预览')).toHaveAttribute(
       'src', 'data:image/png;base64,STYLE',
     );
@@ -125,16 +138,20 @@ describe('GenerateStep', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除风格参考图' }));
     expect(screen.queryByAltText('风格参考图预览')).toBeNull();
     expect(defaultProps.onStyleReferenceChange).toHaveBeenLastCalledWith(null);
-    vi.unstubAllGlobals();
   });
 
   it('passes a read style reference image in the base request', async () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
     const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const file = new File(['fake'], 'style.png', { type: 'image/png' });
     Object.defineProperty(input, 'files', {
-      value: [new File(['fake'], 'style.png', { type: 'image/png' })],
+      value: [file],
     });
-    let reader: { onload: ((event: ProgressEvent) => void) | null; result: string } | null = null;
+    let reader: {
+      onload: ((event: ProgressEvent) => void) | null;
+      result: string;
+      readAsDataURL: ReturnType<typeof vi.fn>;
+    } | null = null;
     class MockFileReader {
       onload: ((event: ProgressEvent) => void) | null = null;
       result = 'data:image/png;base64,STYLE';
@@ -144,7 +161,11 @@ describe('GenerateStep', () => {
     vi.stubGlobal('FileReader', MockFileReader);
 
     fireEvent.change(input);
-    reader?.onload?.({ target: reader } as unknown as ProgressEvent);
+    expect(reader).not.toBeNull();
+    expect(reader!.readAsDataURL).toHaveBeenCalledWith(file);
+    act(() => {
+      reader?.onload?.({ target: reader } as unknown as ProgressEvent);
+    });
     fireEvent.click(screen.getByRole('button', { name: '生成基础图像' }));
 
     await waitFor(() => {
@@ -152,7 +173,6 @@ describe('GenerateStep', () => {
         styleReferenceDataUrl: 'data:image/png;base64,STYLE',
       }));
     });
-    vi.unstubAllGlobals();
   });
 
   it('reports Base generation busy until the async command settles', async () => {
