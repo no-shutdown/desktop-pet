@@ -1,9 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { analyzePhotoWithSettings } from '../vision';
+import { DEFAULT_SETTINGS, type AppSettings } from '../settings';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
 import { analyzePhoto, buildAnalysisMessages } from '../claude-vision';
+
+type RequestBody = {
+  system?: string;
+  messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+};
+
+function getRequestBody(): RequestBody {
+  const request = mockFetch.mock.calls[0][1] as { body: string };
+  return JSON.parse(request.body) as RequestBody;
+}
+
+function settingsFor(visionProvider: AppSettings['visionProvider']): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    visionProvider,
+    visionApiKey: 'vision-test-key',
+    visionModel: 'vision-test-model',
+  };
+}
+
+function messageText(body: RequestBody): string {
+  return body.messages[0].content.find((item) => item.type === 'text')?.text ?? '';
+}
+
+function expectSourceStyleContract(instruction: string): void {
+  const normalized = instruction.toLowerCase();
+  expect(normalized).toContain('source medium/style');
+  expect(normalized).toContain('preserve');
+  expect(normalized).toContain('photorealistic');
+  expect(normalized).toContain('faithfully');
+  expect(normalized).toContain('do not convert existing stylized artwork into generic q-version wording');
+}
 
 describe('claude-vision', () => {
   beforeEach(() => mockFetch.mockReset());
@@ -24,18 +58,60 @@ describe('claude-vision', () => {
     });
 
     await analyzePhoto('data:image/jpeg;base64,abc123', 'sk-ant-test');
-    const request = mockFetch.mock.calls[0][1] as { body: string };
-    const body = JSON.parse(request.body) as {
-      system: string;
-      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
-    };
-    const userText = body.messages[0].content.find((item) => item.type === 'text')?.text ?? '';
-    const instruction = `${body.system} ${userText}`.toLowerCase();
+    const body = getRequestBody();
+    const systemInstruction = body.system?.toLowerCase() ?? '';
+    const userInstruction = messageText(body).toLowerCase();
 
-    expect(instruction).toContain('source style');
-    expect(instruction).toContain('preserve');
-    expect(instruction).toContain('photorealistic');
+    expect(systemInstruction).toContain('source medium/style');
+    expect(systemInstruction).toContain('preserve');
+    expect(systemInstruction).toContain('photorealistic');
+    expect(systemInstruction).toContain('faithfully');
+    expect(systemInstruction).toContain(
+      'do not convert existing stylized artwork into generic q-version wording'
+    );
+    expect(userInstruction).toContain('faithfully');
+    expect(userInstruction).toContain('source medium and style');
   });
+
+  it('analyzePhotoWithSettings sends the source-style contract to Anthropic', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: 'source-style description' }] }),
+    });
+
+    await analyzePhotoWithSettings('data:image/jpeg;base64,abc123', settingsFor('anthropic'));
+    const body = getRequestBody();
+
+    expectSourceStyleContract(body.system ?? '');
+    expect(messageText(body).toLowerCase()).toContain('source medium and style');
+  });
+
+  it.each([
+    {
+      name: 'DeepSeek',
+      provider: 'deepseek' as const,
+      endpoint: 'https://api.deepseek.com/v1/chat/completions',
+    },
+    {
+      name: 'Kimi',
+      provider: 'kimi' as const,
+      endpoint: 'https://api.moonshot.cn/v1/chat/completions',
+    },
+  ])(
+    'analyzePhotoWithSettings sends the source-style contract to $name',
+    async ({ provider, endpoint }) => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: 'source-style description' } }] }),
+      });
+
+      await analyzePhotoWithSettings('data:image/jpeg;base64,abc123', settingsFor(provider));
+      const body = getRequestBody();
+
+      expect(mockFetch).toHaveBeenCalledWith(endpoint, expect.anything());
+      expectSourceStyleContract(messageText(body));
+    }
+  );
 
   it('analyzePhoto calls Anthropic API with correct headers', async () => {
     mockFetch.mockResolvedValueOnce({
