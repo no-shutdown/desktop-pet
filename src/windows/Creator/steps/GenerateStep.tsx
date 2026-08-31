@@ -49,6 +49,7 @@ const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[
 const STYLE_REFERENCE_ACCEPT = 'image/jpeg,image/png,image/webp';
 const STYLE_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const STYLE_REFERENCE_ERROR_MESSAGE = '风格参考图读取失败，请重试。';
+const STYLE_REFERENCE_INVALID_FILE_MESSAGE = '仅支持 JPG、PNG 或 WEBP 图片，请重试。';
 
 function makeRunId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -107,6 +108,7 @@ export default function GenerateStep({
   const [settings, setSettings] = useState(loadSettings);
   const [styleReference, setStyleReference] = useState<string | null>(styleReferenceDataUrl ?? null);
   const [styleReferenceError, setStyleReferenceError] = useState<string | null>(null);
+  const [styleReferenceReading, setStyleReferenceReading] = useState(false);
 
   busyCallbackRef.current = onBusyChange;
 
@@ -116,18 +118,27 @@ export default function GenerateStep({
     busyCallbackRef.current?.(busy);
   }
 
-  function invalidateStyleReferenceRead() {
+  function clearStyleReferenceInput() {
+    if (styleReferenceInputRef.current) {
+      styleReferenceInputRef.current.value = '';
+    }
+  }
+
+  function invalidateStyleReferenceRead(clearReading = true) {
     styleReferenceReadIdRef.current += 1;
     const activeReader = styleReferenceReaderRef.current;
     styleReferenceReaderRef.current = null;
     activeReader?.abort();
+    if (activeReader && clearReading) {
+      setStyleReferenceReading(false);
+    }
   }
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      invalidateStyleReferenceRead();
+      invalidateStyleReferenceRead(false);
       reportBusy(false);
     };
   }, []);
@@ -170,23 +181,32 @@ export default function GenerateStep({
 
   function handleStyleReferenceChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !STYLE_REFERENCE_MIME_TYPES.has(file.type)) return;
+    if (!file) return;
 
-    setStyleReferenceError(null);
     invalidateStyleReferenceRead();
+    setStyleReferenceError(null);
+    if (!STYLE_REFERENCE_MIME_TYPES.has(file.type)) {
+      clearStyleReferenceInput();
+      setStyleReferenceError(STYLE_REFERENCE_INVALID_FILE_MESSAGE);
+      return;
+    }
+
     const readId = styleReferenceReadIdRef.current;
     const reader = new FileReader();
     styleReferenceReaderRef.current = reader;
-    reader.onload = (loadEvent) => {
+    setStyleReferenceReading(true);
+    reader.onload = () => {
       if (
         !mountedRef.current
         || styleReferenceReadIdRef.current !== readId
         || styleReferenceReaderRef.current !== reader
       ) return;
 
-      const result = (loadEvent.target as FileReader).result;
+      const result = reader.result;
       styleReferenceReaderRef.current = null;
+      setStyleReferenceReading(false);
       if (typeof result !== 'string') {
+        clearStyleReferenceInput();
         setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
         return;
       }
@@ -201,6 +221,8 @@ export default function GenerateStep({
       ) return;
 
       styleReferenceReaderRef.current = null;
+      setStyleReferenceReading(false);
+      clearStyleReferenceInput();
       setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
     };
     reader.onabort = () => {
@@ -211,6 +233,8 @@ export default function GenerateStep({
       ) return;
 
       styleReferenceReaderRef.current = null;
+      setStyleReferenceReading(false);
+      clearStyleReferenceInput();
     };
 
     try {
@@ -223,6 +247,8 @@ export default function GenerateStep({
       ) return;
 
       styleReferenceReaderRef.current = null;
+      setStyleReferenceReading(false);
+      clearStyleReferenceInput();
       setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
     }
   }
@@ -232,9 +258,7 @@ export default function GenerateStep({
     setStyleReference(null);
     setStyleReferenceError(null);
     onStyleReferenceChange?.(null);
-    if (styleReferenceInputRef.current) {
-      styleReferenceInputRef.current.value = '';
-    }
+    clearStyleReferenceInput();
   }
 
   function openStyleReferencePicker() {
@@ -248,7 +272,7 @@ export default function GenerateStep({
   }
 
   async function handleGenerate() {
-    if (status === 'generating') return;
+    if (status === 'generating' || styleReferenceReading) return;
 
     reportBusy(true);
     setStatus('generating');
@@ -290,6 +314,7 @@ export default function GenerateStep({
 
   const provider = supportedProvider(settings.imageProvider);
   const generating = status === 'generating';
+  const generationDisabled = generating || styleReferenceReading;
   const progressPercent = progress.total > 0
     ? Math.round((progress.current / progress.total) * 100)
     : 0;
@@ -430,6 +455,9 @@ export default function GenerateStep({
           </button>
         )}
         <p style={{ margin: 0, fontSize: 12, color: '#a0aec0' }}>只参考画风，不复制图片中的人物内容</p>
+        {styleReferenceReading && (
+          <p role="status" style={{ margin: 0, fontSize: 12, color: '#4f8ef7' }}>正在读取风格参考图，请稍候…</p>
+        )}
         {styleReferenceError && (
           <p role="alert" style={{ margin: 0, fontSize: 12, color: '#e53e3e' }}>{styleReferenceError}</p>
         )}
@@ -472,7 +500,7 @@ export default function GenerateStep({
           <>
             <button
               onClick={handleGenerate}
-              disabled={generating}
+              disabled={generationDisabled}
               style={{ padding: '8px 20px', borderRadius: 6, border: '1px solid #4f8ef7', background: '#fff', color: '#4f8ef7', cursor: 'pointer' }}
             >
               重新生成
@@ -487,8 +515,8 @@ export default function GenerateStep({
         ) : (
           <button
             onClick={handleGenerate}
-            disabled={generating}
-            style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: generating ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: generating ? 'not-allowed' : 'pointer' }}
+            disabled={generationDisabled}
+            style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: generationDisabled ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: generationDisabled ? 'not-allowed' : 'pointer' }}
           >
             {status === 'error' ? '重新生成' : '生成基础图像'}
           </button>

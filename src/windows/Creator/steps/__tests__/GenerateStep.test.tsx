@@ -117,6 +117,40 @@ describe('GenerateStep', () => {
     expect(clickSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('disables base generation while a style-reference file is being read', () => {
+    const readers: MockFileReader[] = [];
+    class MockFileReader {
+      onload: ((event: ProgressEvent) => void) | null = null;
+      onerror: ((event: ProgressEvent) => void) | null = null;
+      onabort: ((event: ProgressEvent) => void) | null = null;
+      result: string | null = null;
+      readAsDataURL = vi.fn();
+      abort = vi.fn();
+      constructor() { readers.push(this); }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
+
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const file = new File(['style'], 'style.png', { type: 'image/png' });
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+
+    act(() => {
+      fireEvent.change(input);
+    });
+    const generateButton = screen.getByRole('button', { name: '生成基础图像' });
+    expect(generateButton).toBeDisabled();
+    expect(screen.getByText('正在读取风格参考图，请稍候…')).toBeTruthy();
+    fireEvent.click(generateButton);
+    expect(mockInvoke).not.toHaveBeenCalled();
+
+    act(() => {
+      readers[0].result = 'data:image/png;base64,STYLE';
+      readers[0].onload?.({ target: readers[0] } as unknown as ProgressEvent);
+    });
+    expect(generateButton).not.toBeDisabled();
+  });
+
   it('reads, previews, and removes a style reference image', () => {
     render(<GenerateStep {...defaultProps} runId="run-1" />);
     const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
@@ -243,6 +277,66 @@ describe('GenerateStep', () => {
       readers[1].onabort?.({ target: readers[1] } as unknown as ProgressEvent);
     });
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('clears a failed file input so the same style reference can be retried', () => {
+    const readers: MockFileReader[] = [];
+    class MockFileReader {
+      onload: ((event: ProgressEvent) => void) | null = null;
+      onerror: ((event: ProgressEvent) => void) | null = null;
+      onabort: ((event: ProgressEvent) => void) | null = null;
+      result: string | null = null;
+      readAsDataURL = vi.fn();
+      abort = vi.fn();
+      constructor() { readers.push(this); }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
+
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const file = new File(['style'], 'style.png', { type: 'image/png' });
+    const selectFile = () => {
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+      Object.defineProperty(input, 'value', {
+        configurable: true,
+        writable: true,
+        value: 'C:\\fakepath\\style.png',
+      });
+      fireEvent.change(input);
+    };
+
+    selectFile();
+    act(() => {
+      readers[0].onerror?.({ target: readers[0] } as unknown as ProgressEvent);
+    });
+    expect(input.value).toBe('');
+    expect(screen.getByRole('alert')).toHaveTextContent('风格参考图读取失败，请重试。');
+
+    selectFile();
+    expect(readers).toHaveLength(2);
+    expect(readers[1].readAsDataURL).toHaveBeenCalledWith(file);
+    act(() => {
+      readers[1].result = 'data:image/png;base64,STYLE';
+      readers[1].onload?.({ target: readers[1] } as unknown as ProgressEvent);
+    });
+  });
+
+  it('rejects invalid style-reference files with a retryable Chinese error', () => {
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const file = new File(['not an image'], 'style.txt', { type: 'text/plain' });
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      writable: true,
+      value: 'C:\\fakepath\\style.txt',
+    });
+
+    fireEvent.change(input);
+
+    expect(input.value).toBe('');
+    expect(screen.getByRole('alert')).toHaveTextContent('仅支持 JPG、PNG 或 WEBP 图片，请重试。');
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('passes a read style reference image in the base request', async () => {
