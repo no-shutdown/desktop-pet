@@ -229,8 +229,8 @@ const INTERIOR_SEEN: u8 = 2;
 const OVERSIZED_COMPONENT: u8 = 4;
 const KEY_THRESHOLD: f32 = 8.0;
 const KEY_RAMP_END: f32 = 24.0;
-const ENCLOSED_THRESHOLD: f32 = 24.0;
-const ENCLOSED_RAMP_END: f32 = 32.0;
+const ENCLOSED_THRESHOLD: f32 = 6.0;
+const ENCLOSED_RAMP_END: f32 = 8.0;
 const MAX_COMPONENT_SIZE: usize = 4096;
 const MAX_KEY_GAP_SIZE: usize = 16;
 const MAX_KEY_GAP_WIDTH: u32 = 2;
@@ -1421,7 +1421,7 @@ mod tests {
     fn preserves_an_enclosed_near_background_highlight_but_removes_a_sampled_hair_gap() {
         let background = Rgba([200, 200, 200, 255]);
         let foreground = Rgba([20, 30, 40, 255]);
-        let highlight = Rgba([220, 220, 220, 255]);
+        let highlight = Rgba([205, 205, 205, 255]);
         let mut image = RgbaImage::from_pixel(40, 40, background);
 
         for y in 8..32 {
