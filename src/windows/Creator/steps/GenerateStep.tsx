@@ -48,6 +48,7 @@ const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[
 
 const STYLE_REFERENCE_ACCEPT = 'image/jpeg,image/png,image/webp';
 const STYLE_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const STYLE_REFERENCE_ERROR_MESSAGE = '风格参考图读取失败，请重试。';
 
 function makeRunId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -96,6 +97,8 @@ export default function GenerateStep({
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
   const styleReferenceInputRef = useRef<HTMLInputElement>(null);
+  const styleReferenceReaderRef = useRef<FileReader | null>(null);
+  const styleReferenceReadIdRef = useRef(0);
   const busyCallbackRef = useRef(onBusyChange);
   const [status, setStatus] = useState<Status>('idle');
   const [preview, setPreview] = useState<BasePreviewResult | null>(null);
@@ -103,6 +106,7 @@ export default function GenerateStep({
   const [progress, setProgress] = useState({ current: 0, total: 1 });
   const [settings, setSettings] = useState(loadSettings);
   const [styleReference, setStyleReference] = useState<string | null>(styleReferenceDataUrl ?? null);
+  const [styleReferenceError, setStyleReferenceError] = useState<string | null>(null);
 
   busyCallbackRef.current = onBusyChange;
 
@@ -112,10 +116,18 @@ export default function GenerateStep({
     busyCallbackRef.current?.(busy);
   }
 
+  function invalidateStyleReferenceRead() {
+    styleReferenceReadIdRef.current += 1;
+    const activeReader = styleReferenceReaderRef.current;
+    styleReferenceReaderRef.current = null;
+    activeReader?.abort();
+  }
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      invalidateStyleReferenceRead();
       reportBusy(false);
     };
   }, []);
@@ -160,22 +172,79 @@ export default function GenerateStep({
     const file = event.target.files?.[0];
     if (!file || !STYLE_REFERENCE_MIME_TYPES.has(file.type)) return;
 
+    setStyleReferenceError(null);
+    invalidateStyleReferenceRead();
+    const readId = styleReferenceReadIdRef.current;
     const reader = new FileReader();
+    styleReferenceReaderRef.current = reader;
     reader.onload = (loadEvent) => {
+      if (
+        !mountedRef.current
+        || styleReferenceReadIdRef.current !== readId
+        || styleReferenceReaderRef.current !== reader
+      ) return;
+
       const result = (loadEvent.target as FileReader).result;
-      if (typeof result !== 'string') return;
+      styleReferenceReaderRef.current = null;
+      if (typeof result !== 'string') {
+        setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
+        return;
+      }
       setStyleReference(result);
       onStyleReferenceChange?.(result);
     };
-    reader.readAsDataURL(file);
+    reader.onerror = () => {
+      if (
+        !mountedRef.current
+        || styleReferenceReadIdRef.current !== readId
+        || styleReferenceReaderRef.current !== reader
+      ) return;
+
+      styleReferenceReaderRef.current = null;
+      setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
+    };
+    reader.onabort = () => {
+      if (
+        !mountedRef.current
+        || styleReferenceReadIdRef.current !== readId
+        || styleReferenceReaderRef.current !== reader
+      ) return;
+
+      styleReferenceReaderRef.current = null;
+    };
+
+    try {
+      reader.readAsDataURL(file);
+    } catch {
+      if (
+        !mountedRef.current
+        || styleReferenceReadIdRef.current !== readId
+        || styleReferenceReaderRef.current !== reader
+      ) return;
+
+      styleReferenceReaderRef.current = null;
+      setStyleReferenceError(STYLE_REFERENCE_ERROR_MESSAGE);
+    }
   }
 
   function handleRemoveStyleReference() {
+    invalidateStyleReferenceRead();
     setStyleReference(null);
+    setStyleReferenceError(null);
     onStyleReferenceChange?.(null);
     if (styleReferenceInputRef.current) {
       styleReferenceInputRef.current.value = '';
     }
+  }
+
+  function openStyleReferencePicker() {
+    styleReferenceInputRef.current?.click();
+  }
+
+  function handleStyleReferencePickerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openStyleReferencePicker();
   }
 
   async function handleGenerate() {
@@ -320,7 +389,18 @@ export default function GenerateStep({
           ref={styleReferenceInputRef}
           type="file"
           accept={STYLE_REFERENCE_ACCEPT}
-          style={{ display: 'none' }}
+          aria-label="选择风格参考图"
+          style={{
+            position: 'absolute',
+            width: 1,
+            height: 1,
+            padding: 0,
+            margin: -1,
+            overflow: 'hidden',
+            clip: 'rect(0, 0, 0, 0)',
+            whiteSpace: 'nowrap',
+            border: 0,
+          }}
           onChange={handleStyleReferenceChange}
         />
         {styleReference ? (
@@ -340,14 +420,19 @@ export default function GenerateStep({
             </button>
           </div>
         ) : (
-          <label
-            htmlFor="style-reference-file-input"
-            style={{ border: '1px dashed #cbd5e0', borderRadius: 8, padding: '14px 16px', color: '#4f8ef7', cursor: 'pointer', textAlign: 'center' }}
+          <button
+            type="button"
+            onClick={openStyleReferencePicker}
+            onKeyDown={handleStyleReferencePickerKeyDown}
+            style={{ width: '100%', border: '1px dashed #cbd5e0', borderRadius: 8, padding: '14px 16px', color: '#4f8ef7', background: '#fff', cursor: 'pointer', textAlign: 'center' }}
           >
             上传一张参考画风的图片（可选）
-          </label>
+          </button>
         )}
         <p style={{ margin: 0, fontSize: 12, color: '#a0aec0' }}>只参考画风，不复制图片中的人物内容</p>
+        {styleReferenceError && (
+          <p role="alert" style={{ margin: 0, fontSize: 12, color: '#e53e3e' }}>{styleReferenceError}</p>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', padding: '16px 0' }}>

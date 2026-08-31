@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 
 const { mockInvoke, mockListen, mockSaveSettings } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
@@ -65,7 +65,9 @@ describe('GenerateStep', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('calls generate_base_preview with the current backend payload', async () => {
@@ -100,6 +102,19 @@ describe('GenerateStep', () => {
       'accept', 'image/jpeg,image/png,image/webp',
     );
     expect(screen.getByText('只参考画风，不复制图片中的人物内容')).toBeTruthy();
+  });
+
+  it('opens the style-reference chooser from the keyboard-accessible upload control', () => {
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+    const uploadButton = screen.getByRole('button', { name: '上传一张参考画风的图片（可选）' });
+
+    expect(input.style.display).not.toBe('none');
+    fireEvent.keyDown(uploadButton, { key: 'Enter' });
+    fireEvent.keyDown(uploadButton, { key: ' ' });
+
+    expect(clickSpy).toHaveBeenCalledTimes(2);
   });
 
   it('reads, previews, and removes a style reference image', () => {
@@ -138,6 +153,96 @@ describe('GenerateStep', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除风格参考图' }));
     expect(screen.queryByAltText('风格参考图预览')).toBeNull();
     expect(defaultProps.onStyleReferenceChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it('aborts and ignores stale or unmounted style-reference readers', () => {
+    const onStyleReferenceChange = vi.fn();
+    const readers: MockFileReader[] = [];
+    class MockFileReader {
+      onload: ((event: ProgressEvent) => void) | null = null;
+      onerror: ((event: ProgressEvent) => void) | null = null;
+      onabort: ((event: ProgressEvent) => void) | null = null;
+      result: string | null = null;
+      readAsDataURL = vi.fn();
+      abort = vi.fn();
+      constructor() { readers.push(this); }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
+
+    const { unmount } = render(
+      <GenerateStep {...defaultProps} onStyleReferenceChange={onStyleReferenceChange} runId="run-1" />,
+    );
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const firstFile = new File(['first'], 'first.png', { type: 'image/png' });
+    const secondFile = new File(['second'], 'second.png', { type: 'image/png' });
+
+    Object.defineProperty(input, 'files', { configurable: true, value: [firstFile] });
+    fireEvent.change(input);
+    Object.defineProperty(input, 'files', { configurable: true, value: [secondFile] });
+    fireEvent.change(input);
+
+    expect(readers).toHaveLength(2);
+    expect(readers[0].abort).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      readers[0].result = 'data:image/png;base64,STALE';
+      readers[0].onload?.({ target: readers[0] } as unknown as ProgressEvent);
+      readers[0].onerror?.({ target: readers[0] } as unknown as ProgressEvent);
+      readers[0].onabort?.({ target: readers[0] } as unknown as ProgressEvent);
+    });
+    expect(onStyleReferenceChange).not.toHaveBeenCalled();
+    expect(screen.queryByAltText('风格参考图预览')).toBeNull();
+
+    act(() => {
+      unmount();
+    });
+    expect(readers[1].abort).toHaveBeenCalledTimes(1);
+    act(() => {
+      readers[1].result = 'data:image/png;base64,AFTER-UNMOUNT';
+      readers[1].onload?.({ target: readers[1] } as unknown as ProgressEvent);
+    });
+    expect(onStyleReferenceChange).not.toHaveBeenCalled();
+  });
+
+  it('shows a retry message for style-reference reader errors and clears it', () => {
+    const readers: MockFileReader[] = [];
+    class MockFileReader {
+      onload: ((event: ProgressEvent) => void) | null = null;
+      onerror: ((event: ProgressEvent) => void) | null = null;
+      onabort: ((event: ProgressEvent) => void) | null = null;
+      result: string | null = null;
+      readAsDataURL = vi.fn();
+      abort = vi.fn();
+      constructor() { readers.push(this); }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
+
+    render(<GenerateStep {...defaultProps} runId="run-1" />);
+    const input = screen.getByTestId('style-reference-file-input') as HTMLInputElement;
+    const firstFile = new File(['first'], 'first.png', { type: 'image/png' });
+    const secondFile = new File(['second'], 'second.png', { type: 'image/png' });
+
+    Object.defineProperty(input, 'files', { configurable: true, value: [firstFile] });
+    fireEvent.change(input);
+    act(() => {
+      readers[0].onerror?.({ target: readers[0] } as unknown as ProgressEvent);
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('风格参考图读取失败，请重试。');
+
+    Object.defineProperty(input, 'files', { configurable: true, value: [secondFile] });
+    fireEvent.change(input);
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    act(() => {
+      readers[1].result = 'data:image/png;base64,STYLE';
+      readers[1].onload?.({ target: readers[1] } as unknown as ProgressEvent);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '移除风格参考图' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    act(() => {
+      readers[1].onabort?.({ target: readers[1] } as unknown as ProgressEvent);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('passes a read style reference image in the base request', async () => {
