@@ -29,11 +29,13 @@ interface GenerationProgress {
 interface GenerateStepProps {
   prompt: string;
   referenceDataUrl?: string | null;
+  styleReferenceDataUrl?: string | null;
   sourceStyle: SourceStyle;
   runId?: string;
   onNext: (base: { runId: string; dataUrl: string }) => void;
   onBack: () => void;
   onBusyChange?: (busy: boolean) => void;
+  onStyleReferenceChange?: (dataUrl: string | null) => void;
 }
 
 type Status = 'idle' | 'generating' | 'ready' | 'error';
@@ -43,6 +45,9 @@ const IMAGE_OPTIONS: { value: GenerationProvider; label: string; desc: string }[
   { value: 'wanxiang', label: '阿里云万相', desc: 'DashScope wanx 系列' },
   { value: 'localsd', label: '本地 Stable Diffusion', desc: 'AUTOMATIC1111 WebUI' },
 ];
+
+const STYLE_REFERENCE_ACCEPT = 'image/jpeg,image/png,image/webp';
+const STYLE_REFERENCE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 function makeRunId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -79,21 +84,25 @@ function messageFromError(error: unknown): string {
 export default function GenerateStep({
   prompt,
   referenceDataUrl,
+  styleReferenceDataUrl,
   sourceStyle,
   runId,
   onNext,
   onBack,
   onBusyChange,
+  onStyleReferenceChange,
 }: GenerateStepProps) {
   const [stableRunId] = useState(() => runId ?? makeRunId());
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
+  const styleReferenceInputRef = useRef<HTMLInputElement>(null);
   const busyCallbackRef = useRef(onBusyChange);
   const [status, setStatus] = useState<Status>('idle');
   const [preview, setPreview] = useState<BasePreviewResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 1 });
   const [settings, setSettings] = useState(loadSettings);
+  const [styleReference, setStyleReference] = useState<string | null>(styleReferenceDataUrl ?? null);
 
   busyCallbackRef.current = onBusyChange;
 
@@ -110,6 +119,10 @@ export default function GenerateStep({
       reportBusy(false);
     };
   }, []);
+
+  useEffect(() => {
+    setStyleReference(styleReferenceDataUrl ?? null);
+  }, [styleReferenceDataUrl]);
 
   useEffect(() => {
     let active = true;
@@ -143,6 +156,28 @@ export default function GenerateStep({
     });
   }
 
+  function handleStyleReferenceChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !STYLE_REFERENCE_MIME_TYPES.has(file.type)) return;
+
+    const reader = new FileReader();
+    reader.onload = (loadEvent) => {
+      const result = (loadEvent.target as FileReader).result;
+      if (typeof result !== 'string') return;
+      setStyleReference(result);
+      onStyleReferenceChange?.(result);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function handleRemoveStyleReference() {
+    setStyleReference(null);
+    onStyleReferenceChange?.(null);
+    if (styleReferenceInputRef.current) {
+      styleReferenceInputRef.current.value = '';
+    }
+  }
+
   async function handleGenerate() {
     if (status === 'generating') return;
 
@@ -158,6 +193,7 @@ export default function GenerateStep({
         runId: stableRunId,
         basePrompt: prompt,
         referenceDataUrl: referenceDataUrl || null,
+        styleReferenceDataUrl: styleReference || null,
         imageProvider: activeProvider,
         imageApiKey: apiKeyForProvider(settings, settings.imageProvider) || null,
         baseModel: baseModelForProvider(settings, settings.imageProvider) || null,
@@ -274,6 +310,44 @@ export default function GenerateStep({
             style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box' }}
           />
         )}
+      </div>
+
+      <div style={{ background: '#f7fafc', borderRadius: 10, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 13, color: '#2d3748', fontWeight: 600 }}>风格参考图（可选）</div>
+        <input
+          id="style-reference-file-input"
+          data-testid="style-reference-file-input"
+          ref={styleReferenceInputRef}
+          type="file"
+          accept={STYLE_REFERENCE_ACCEPT}
+          style={{ display: 'none' }}
+          onChange={handleStyleReferenceChange}
+        />
+        {styleReference ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <img
+              alt="风格参考图预览"
+              src={styleReference}
+              style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0' }}
+            />
+            <button
+              type="button"
+              aria-label="移除风格参考图"
+              onClick={handleRemoveStyleReference}
+              style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568', cursor: 'pointer' }}
+            >
+              移除风格参考图
+            </button>
+          </div>
+        ) : (
+          <label
+            htmlFor="style-reference-file-input"
+            style={{ border: '1px dashed #cbd5e0', borderRadius: 8, padding: '14px 16px', color: '#4f8ef7', cursor: 'pointer', textAlign: 'center' }}
+          >
+            上传一张参考画风的图片（可选）
+          </label>
+        )}
+        <p style={{ margin: 0, fontSize: 12, color: '#a0aec0' }}>只参考画风，不复制图片中的人物内容</p>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', padding: '16px 0' }}>

@@ -61,6 +61,7 @@ export default function CreatorWindow() {
       baseDataUrl: null,
       generatedDataUrl: null,
       generatedConfig: null,
+      styleReferenceDataUrl: null,
     });
   }
 
@@ -207,9 +208,11 @@ export default function CreatorWindow() {
             <GenerateStep
               prompt={data.prompt}
               referenceDataUrl={data.photoDataUrl}
+              styleReferenceDataUrl={data.styleReferenceDataUrl}
               sourceStyle={data.sourceStyle}
               runId={data.generationRunId ?? undefined}
               onBusyChange={setGenerationBusy}
+              onStyleReferenceChange={(styleReferenceDataUrl) => updateData({ styleReferenceDataUrl })}
               onNext={({ runId, dataUrl }) => {
                 updateData({ generationRunId: runId, baseDataUrl: dataUrl });
                 setStep('state-generate');

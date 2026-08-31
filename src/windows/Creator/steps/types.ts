@@ -29,6 +29,7 @@ export interface GeneratedSpriteConfig {
 
 export interface WizardData {
   photoDataUrl: string | null;
+  styleReferenceDataUrl: string | null;
   prompt: string;
   sourceStyle: SourceStyle;
   apiKey: string;
@@ -43,6 +44,7 @@ export interface WizardData {
 
 export const INITIAL_WIZARD_DATA: WizardData = {
   photoDataUrl: null,
+  styleReferenceDataUrl: null,
   prompt: '',
   sourceStyle: 'realistic',
   apiKey: '',
