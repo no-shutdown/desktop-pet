@@ -449,16 +449,14 @@ pub fn normalize_horizontal_row(bytes: &[u8], key: &ChromaKey) -> Result<RgbaIma
 }
 
 /// Splits a raw row image (background already removed) into `frame_count`
-/// output frames of `FRAME_W`×`FRAME_H` each, re-centering each character
-/// horizontally in its own frame while sharing a common vertical scale and
-/// bottom-aligned baseline across all frames.
-///
-/// This is more robust than trusting the AI to place characters at exact
-/// 1/8th column boundaries: AI models routinely leave asymmetric side padding,
-/// cluster characters off-center, or output different total widths. Slicing
-/// against the visible content bounds and re-centering per column fixes those.
+/// output frames of `FRAME_W`×`FRAME_H` each. The visible row is partitioned
+/// into fixed source slots, then every slot is resized and placed with one
+/// shared scale, horizontal offset, and bottom baseline so shared furniture
+/// stays aligned when a character changes width between frames.
 fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
-    let dst_width = FRAME_W * frame_count;
+    let Some(dst_width) = FRAME_W.checked_mul(frame_count) else {
+        return RgbaImage::new(0, FRAME_H);
+    };
     let mut dst = RgbaImage::new(dst_width, FRAME_H);
     if frame_count == 0 {
         return dst;
@@ -467,57 +465,90 @@ fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
     let Some((x_min, y_min, x_max, y_max)) = find_visible_bounds(source) else {
         return dst;
     };
+    let Some(content_w) = x_max.checked_sub(x_min).and_then(|width| width.checked_add(1)) else {
+        return dst;
+    };
+    let Some(content_h) = y_max.checked_sub(y_min).and_then(|height| height.checked_add(1)) else {
+        return dst;
+    };
+    let Some(segment_w) = content_w
+        .checked_add(frame_count.saturating_sub(1))
+        .map(|width| width / frame_count)
+    else {
+        return dst;
+    };
+    if segment_w == 0 {
+        return dst;
+    }
 
-    let content_w = x_max - x_min + 1;
-    let content_h = y_max - y_min + 1;
-    let segment_w = (content_w / frame_count).max(1);
-
-    // Shared vertical scale so every character has the same on-screen height.
-    // The horizontal cap keeps a wide-outlier frame reaching outward
-    // from breaking the 128-wide destination frame.
+    // One shared scale keeps the source slot geometry and all shared scene
+    // elements aligned while still fitting the complete content in a frame.
     let scale_v = f64::from(FRAME_H) / f64::from(content_h);
     let scale_h = f64::from(FRAME_W) / f64::from(segment_w);
     let global_scale = scale_v.min(scale_h);
+    let scaled_w = (f64::from(segment_w) * global_scale)
+        .round()
+        .clamp(1.0, f64::from(FRAME_W)) as u32;
+    let scaled_h = (f64::from(content_h) * global_scale)
+        .round()
+        .clamp(1.0, f64::from(FRAME_H)) as u32;
+    let dst_x_offset = (FRAME_W - scaled_w) / 2;
+    let dst_y_offset = FRAME_H - scaled_h;
 
-    for i in 0..frame_count {
-        let seg_x_start = x_min + i * segment_w;
-        let seg_x_end = if i == frame_count - 1 {
-            x_max
-        } else {
-            seg_x_start + segment_w - 1
-        };
-
-        let Some((xi_min, xi_max)) = find_segment_x_bounds(
-            source, seg_x_start, seg_x_end, y_min, y_max,
-        ) else {
-            // Blank segment: leave the destination frame transparent so the
-            // caller's validate_sprite_row surfaces a specific empty-frame error.
+    for frame_index in 0..frame_count {
+        let Some(slot_offset) = frame_index.checked_mul(segment_w) else {
             continue;
         };
+        if slot_offset >= content_w {
+            // Leave empty source slots transparent so validate_sprite_row
+            // surfaces an actionable empty-frame error to the caller.
+            continue;
+        }
 
-        let src_w = xi_max - xi_min + 1;
-        let cropped = image::imageops::crop_imm(source, xi_min, y_min, src_w, content_h).to_image();
+        let Some(src_x_start) = x_min.checked_add(slot_offset) else {
+            continue;
+        };
+        let copy_w = (content_w - slot_offset).min(segment_w);
+        let Some(src_x_end) = src_x_start.checked_add(copy_w) else {
+            continue;
+        };
+        let Some(src_y_end) = y_min.checked_add(content_h) else {
+            continue;
+        };
+        if src_x_end > source.width() || src_y_end > source.height() {
+            continue;
+        }
 
-        let scaled_w = ((f64::from(src_w) * global_scale).round() as u32)
-            .max(1)
-            .min(FRAME_W);
-        let scaled_h = ((f64::from(content_h) * global_scale).round() as u32)
-            .max(1)
-            .min(FRAME_H);
-        let scaled = DynamicImage::ImageRgba8(cropped)
+        // Keep the complete fixed-width source slot. A short final slot is
+        // padded with transparency instead of being re-centered independently.
+        let cropped = image::imageops::crop_imm(source, src_x_start, y_min, copy_w, content_h)
+            .to_image();
+        let mut slot = RgbaImage::new(segment_w, content_h);
+        for (x, y, pixel) in cropped.enumerate_pixels() {
+            slot.put_pixel(x, y, *pixel);
+        }
+
+        let scaled = DynamicImage::ImageRgba8(slot)
             .resize_exact(scaled_w, scaled_h, FilterType::Lanczos3)
             .to_rgba8();
 
-        let dst_frame_x = i * FRAME_W;
-        let dst_x_offset = (FRAME_W - scaled_w) / 2;
-        let dst_y_offset = FRAME_H - scaled_h;
+        let Some(dst_frame_x) = frame_index.checked_mul(FRAME_W) else {
+            continue;
+        };
 
         for (px, py, pixel) in scaled.enumerate_pixels() {
             if pixel[3] == 0 {
                 continue;
             }
-            let dx = dst_frame_x + dst_x_offset + px;
-            let dy = dst_y_offset + py;
+            let Some(dx) = dst_frame_x
+                .checked_add(dst_x_offset)
+                .and_then(|x| x.checked_add(px))
+            else {
+                continue;
+            };
+            let Some(dy) = dst_y_offset.checked_add(py) else {
+                continue;
+            };
             if dx < dst_width && dy < FRAME_H {
                 dst.put_pixel(dx, dy, *pixel);
             }
@@ -546,30 +577,6 @@ fn find_visible_bounds(image: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
     }
 
     found.then_some((x_min, y_min, x_max, y_max))
-}
-
-fn find_segment_x_bounds(
-    image: &RgbaImage,
-    x_start: u32,
-    x_end: u32,
-    y_start: u32,
-    y_end: u32,
-) -> Option<(u32, u32)> {
-    let mut xi_min = image.width();
-    let mut xi_max = 0u32;
-    let mut found = false;
-
-    for y in y_start..=y_end {
-        for x in x_start..=x_end {
-            if image.get_pixel(x, y)[3] > 0 {
-                found = true;
-                xi_min = xi_min.min(x);
-                xi_max = xi_max.max(x);
-            }
-        }
-    }
-
-    found.then_some((xi_min, xi_max))
 }
 
 /// Wanxiang / DashScope image-edit models require each input dimension to be in
@@ -1017,38 +1024,60 @@ mod tests {
     }
 
     #[test]
-    fn per_frame_slicing_recenters_characters_that_the_ai_placed_off_center() {
-        // Simulate an AI-generated row where every character is shoved into the
-        // right half of its 256-pixel column. Old naive equal-slice would clip
-        // them; the new algorithm should re-center each one in its output frame.
+    fn row_normalization_keeps_shared_desk_x_coordinates_when_character_width_changes() {
         let key = CHROMA_KEY_CANDIDATES[0];
+        let width = API_FRAME_W * DEFAULT_FRAME_COUNT;
         let mut source = RgbaImage::from_pixel(
-            API_FRAME_W * DEFAULT_FRAME_COUNT,
+            width,
             API_FRAME_H,
             Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
         );
+        let desk = Rgba([20, 220, 40, 255]);
+        let character = Rgba([220, 80, 80, 255]);
+        let anchor = Rgba([80, 80, 220, 255]);
+
         for frame_index in 0..DEFAULT_FRAME_COUNT {
-            let x_start = frame_index * 256 + 200;
-            let x_end = frame_index * 256 + 232;
-            for x in x_start..x_end {
-                for y in 32..224 {
-                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+            let source_x = frame_index * API_FRAME_W;
+            for x in (source_x + 80)..(source_x + 160) {
+                for y in 190..203 {
+                    source.put_pixel(x, y, desk);
+                }
+            }
+            let character_start = match frame_index {
+                0 => source_x + 20,
+                1 => source_x + 180,
+                _ => source_x + 105,
+            };
+            for x in character_start..(character_start + 30) {
+                for y in 40..180 {
+                    source.put_pixel(x, y, character);
                 }
             }
         }
+        source.put_pixel(0, 0, anchor);
+        source.put_pixel(width - 1, 0, anchor);
 
-        let normalized =
-            normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+        let normalized = normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+        let offsets = (0..DEFAULT_FRAME_COUNT)
+            .map(|frame_index| {
+                let start_x = frame_index * FRAME_W;
+                (start_x..start_x + FRAME_W)
+                    .filter(|x| {
+                        (0..FRAME_H).any(|y| {
+                            let pixel = normalized.get_pixel(*x, y);
+                            pixel[1] > 150 && pixel[0] < 100 && pixel[2] < 100
+                        })
+                    })
+                    .map(|x| x - start_x)
+                    .next()
+                    .expect("desk marker should be present in every frame")
+            })
+            .collect::<Vec<_>>();
 
-        assert_eq!(normalized.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
-        validate_sprite_row(&normalized, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
-        for frame_index in 0..DEFAULT_FRAME_COUNT {
-            let center = frame_index * FRAME_W + FRAME_W / 2;
-            assert!(
-                normalized.get_pixel(center, FRAME_H / 2)[3] > 0,
-                "frame {frame_index} character should be re-centered around x={center}"
-            );
-        }
+        assert!(
+            offsets.windows(2).all(|pair| pair[0] == pair[1]),
+            "shared desk marker drifted between frames: {offsets:?}"
+        );
     }
 
     #[test]
