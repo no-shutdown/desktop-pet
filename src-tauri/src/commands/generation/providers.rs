@@ -56,7 +56,7 @@ pub fn siliconflow_base_body_with_references(
     character_image_data_url: &str,
     style_image_data_url: &str,
 ) -> Result<Value, String> {
-    if model.trim() != "Qwen/Qwen-Image-Edit-2509" {
+    if model != "Qwen/Qwen-Image-Edit-2509" {
         return Err("SiliconFlow style references require Qwen/Qwen-Image-Edit-2509".to_string());
     }
 
@@ -187,11 +187,11 @@ pub fn wanxiang_base_body_with_references(
     character_image_data_url: &str,
     style_image_data_url: &str,
 ) -> Result<Value, String> {
-    if !matches!(
-        model.trim(),
-        "wan2.6-image" | "wan2.7-image" | "wan2.7-image-pro"
-    ) {
-        return Err("Wanxiang style references require wan2.6 or wan2.7 models".to_string());
+    if !matches!(model, "wan2.6-image" | "wan2.7-image" | "wan2.7-image-pro") {
+        return Err(
+            "Wanxiang style references require one of: wan2.6-image, wan2.7-image, wan2.7-image-pro"
+                .to_string(),
+        );
     }
 
     Ok(serde_json::json!({
@@ -1134,6 +1134,19 @@ mod tests {
     }
 
     #[test]
+    fn siliconflow_base_body_with_references_rejects_whitespace_model_variants() {
+        let error = siliconflow_base_body_with_references(
+            " Qwen/Qwen-Image-Edit-2509 ",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Qwen/Qwen-Image-Edit-2509"));
+    }
+
+    #[test]
     fn siliconflow_row_body_has_exact_reference_image_contract() {
         let body = siliconflow_row_body(
             "Qwen/Qwen-Image-Edit-2509",
@@ -1230,7 +1243,12 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("wan2.6") || error.contains("wan2.7"));
+        for model in ["wan2.6-image", "wan2.7-image", "wan2.7-image-pro"] {
+            assert!(
+                error.contains(model),
+                "missing supported model in error: {model}"
+            );
+        }
     }
 
     #[test]
@@ -1247,6 +1265,39 @@ mod tests {
             assert!(
                 error.contains("wan2.6") || error.contains("wan2.7"),
                 "unexpected error for {model}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn wanxiang_base_body_with_references_accepts_supported_image_models() {
+        for model in ["wan2.6-image", "wan2.7-image", "wan2.7-image-pro"] {
+            let body = wanxiang_base_body_with_references(
+                model,
+                "base prompt",
+                "data:image/jpeg;base64,CHARACTER",
+                "data:image/png;base64,STYLE",
+            )
+            .unwrap();
+
+            assert_eq!(body["model"], model);
+        }
+    }
+
+    #[test]
+    fn wanxiang_base_body_with_references_rejects_whitespace_model_variants() {
+        let error = wanxiang_base_body_with_references(
+            " wan2.7-image ",
+            "base prompt",
+            "data:image/jpeg;base64,CHARACTER",
+            "data:image/png;base64,STYLE",
+        )
+        .unwrap_err();
+
+        for model in ["wan2.6-image", "wan2.7-image", "wan2.7-image-pro"] {
+            assert!(
+                error.contains(model),
+                "missing supported model in error: {model}"
             );
         }
     }
