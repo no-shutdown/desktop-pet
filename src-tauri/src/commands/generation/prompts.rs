@@ -13,7 +13,7 @@ const REALISTIC_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical ba
 const STYLIZED_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical base image already preserves the original art medium of the reference artwork. Preserve the canonical base's exact line quality, proportions, palette, shading, and texture, as well as its style, composition, and orientation, including its existing cartoon, anime, illustration, or pixel art treatment across every frame; change only the requested state motion. Do not restyle, re-render, reinterpret, or convert the canonical base into a different medium.";
 const BASE_FACING_LOCK: &str = "CANONICAL FACING LOCK: use one fixed forward-facing character orientation for the canonical base; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition; no mirror, no flip, no turn, no side turn, and no three-quarter view.";
 const ROW_FACING_LOCK: &str = "FACING DIRECTION LOCK: match the canonical base exactly in every frame; lock the character facing direction, head angle, body orientation, gaze direction, camera relationship, and composition with no change between frames.";
-const STYLE_REFERENCE_CONTRACT: &str = "STYLE REFERENCE CONTRACT: image 1 is the original character identity reference and image 2 is a pure style reference. Preserve image 1's identity, face, clothing, and accessories; borrow only image 2's line quality, palette, materials, shading, proportions, and overall charm. do not copy image 2's subject, clothing, pose, background, composition, props, or text.";
+const STYLE_REFERENCE_CONTRACT: &str = " STYLE REFERENCE CONTRACT: image 1 is the original character identity reference and image 2 is a pure style reference. Preserve image 1's identity, face, clothing, and accessories; borrow only image 2's line quality, palette, materials, shading, proportions, and overall charm. do not copy image 2's subject, clothing, pose, background, composition, props, or text.";
 
 pub fn build_base_prompt(
     base_description: &str,
@@ -149,6 +149,7 @@ mod tests {
         assert!(prompt.contains("image 1 is the original character identity reference"));
         assert!(prompt.contains("image 2 is a pure style reference"));
         assert!(prompt.contains("do not copy image 2's subject"));
+        assert!(prompt.contains("no three-quarter view. STYLE REFERENCE CONTRACT:"));
 
         let prompt_without_style = build_base_prompt_with_style_reference(
             "a character",

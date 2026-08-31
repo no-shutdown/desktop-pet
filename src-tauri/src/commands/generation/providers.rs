@@ -187,7 +187,10 @@ pub fn wanxiang_base_body_with_references(
     character_image_data_url: &str,
     style_image_data_url: &str,
 ) -> Result<Value, String> {
-    if !is_new_wan_model(model) {
+    if !matches!(
+        model.trim(),
+        "wan2.6-image" | "wan2.7-image" | "wan2.7-image-pro"
+    ) {
         return Err("Wanxiang style references require wan2.6 or wan2.7 models".to_string());
     }
 
@@ -1228,6 +1231,24 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("wan2.6") || error.contains("wan2.7"));
+    }
+
+    #[test]
+    fn wanxiang_base_body_with_references_rejects_unsupported_wan2_models() {
+        for model in ["wan2.5-image", "wan2.foo"] {
+            let error = wanxiang_base_body_with_references(
+                model,
+                "base prompt",
+                "data:image/jpeg;base64,CHARACTER",
+                "data:image/png;base64,STYLE",
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("wan2.6") || error.contains("wan2.7"),
+                "unexpected error for {model}: {error}"
+            );
+        }
     }
 
     #[test]
