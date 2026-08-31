@@ -1257,7 +1257,8 @@ mod tests {
 
     #[test]
     fn border_sampling_survives_a_character_intruding_into_one_corner() {
-        // Solid green background with a small dark blob in the top-left corner.
+        // Off-key background with a small light character intruding into the
+        // top-left corner.
         // Corner-mean would pull the sampled bg toward the blob; the median
         // survives because <50% of border pixels are the intruder.
         let key = ChromaKey {
@@ -1265,10 +1266,12 @@ mod tests {
             hex: "#00FF00",
             rgb: [0, 255, 0],
         };
-        let mut image = RgbaImage::from_pixel(64, 64, Rgba([0, 255, 0, 255]));
+        let background = Rgba([12, 12, 12, 255]);
+        let character = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(64, 64, background);
         for y in 0..3 {
             for x in 0..3 {
-                image.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                image.put_pixel(x, y, character);
             }
         }
 
@@ -1284,26 +1287,36 @@ mod tests {
                 );
             }
         }
-        assert_eq!(image.get_pixel(1, 1).0, [20, 30, 40, 255]);
+        assert_eq!(image.get_pixel(1, 1).0, character.0);
     }
 
     #[test]
     fn removes_a_diagonally_connected_sampled_background_pixel() {
-        let background = Rgba([12, 12, 12, 255]);
+        let sampled_background = Rgba([12, 12, 12, 255]);
+        let diagonal_connector = Rgba([30, 30, 30, 255]);
         let foreground = Rgba([220, 220, 220, 255]);
-        let mut image = RgbaImage::from_pixel(16, 16, background);
+        let mut image = RgbaImage::from_pixel(16, 16, sampled_background);
 
-        for y in 1..4 {
-            for x in 1..4 {
-                image.put_pixel(x, y, foreground);
+        let diagonal_chain = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)];
+        for &(x, y) in &diagonal_chain {
+            image.put_pixel(x, y, diagonal_connector);
+            if x > 0 {
+                image.put_pixel(x - 1, y, foreground);
+            }
+            if x + 1 < image.width() {
+                image.put_pixel(x + 1, y, foreground);
+            }
+            if y > 0 {
+                image.put_pixel(x, y - 1, foreground);
+            }
+            if y + 1 < image.height() {
+                image.put_pixel(x, y + 1, foreground);
             }
         }
-        image.put_pixel(1, 1, background);
-        image.put_pixel(2, 2, background);
 
         remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
 
-        assert_eq!(image.get_pixel(2, 2).0, [0, 0, 0, 0]);
+        assert_eq!(image.get_pixel(5, 5).0, [0, 0, 0, 0]);
     }
 
     #[test]
