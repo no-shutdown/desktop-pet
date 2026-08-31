@@ -117,19 +117,104 @@ pub fn apply_chroma_key(image: &mut RgbaImage, key: &ChromaKey, threshold: u8) {
     }
 }
 
-fn push_neighbors(queue: &mut VecDeque<(u32, u32)>, x: u32, y: u32, width: u32, height: u32) {
-    if x > 0 {
-        queue.push_back((x - 1, y));
+fn for_each_neighbor<F>(x: u32, y: u32, width: u32, height: u32, mut visit: F)
+where
+    F: FnMut(u32, u32),
+{
+    if width == 0 || height == 0 {
+        return;
     }
-    if x + 1 < width {
-        queue.push_back((x + 1, y));
+
+    let min_x = x.saturating_sub(1);
+    let max_x = x.saturating_add(1).min(width - 1);
+    let min_y = y.saturating_sub(1);
+    let max_y = y.saturating_add(1).min(height - 1);
+    for neighbor_y in min_y..=max_y {
+        for neighbor_x in min_x..=max_x {
+            if neighbor_x != x || neighbor_y != y {
+                visit(neighbor_x, neighbor_y);
+            }
+        }
     }
-    if y > 0 {
-        queue.push_back((x, y - 1));
+}
+
+fn enqueue_if_unseen(
+    queue: &mut VecDeque<(u32, u32)>,
+    queued: &mut [bool],
+    x: u32,
+    y: u32,
+    width: u32,
+) {
+    let idx = (y * width + x) as usize;
+    if !queued[idx] {
+        queued[idx] = true;
+        queue.push_back((x, y));
     }
-    if y + 1 < height {
-        queue.push_back((x, y + 1));
+}
+
+fn push_neighbors(
+    queue: &mut VecDeque<(u32, u32)>,
+    queued: &mut [bool],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) {
+    for_each_neighbor(x, y, width, height, |neighbor_x, neighbor_y| {
+        enqueue_if_unseen(queue, queued, neighbor_x, neighbor_y, width);
+    });
+}
+
+fn background_alpha(
+    pixel: &Rgba<u8>,
+    color: [u8; 3],
+    threshold: f32,
+    ramp_end: f32,
+) -> Option<u8> {
+    if pixel[3] == 0 {
+        return Some(0);
     }
+
+    let distance = (squared_rgb_distance([pixel[0], pixel[1], pixel[2]], color) as f32).sqrt();
+    if distance > ramp_end {
+        return None;
+    }
+    if distance <= threshold {
+        return Some(0);
+    }
+
+    let ratio = (distance - threshold) / (ramp_end - threshold);
+    Some((f32::from(pixel[3]) * ratio).round() as u8)
+}
+
+fn apply_background_alpha(
+    image: &mut RgbaImage,
+    x: u32,
+    y: u32,
+    color: [u8; 3],
+    threshold: f32,
+    ramp_end: f32,
+) -> bool {
+    let pixel = *image.get_pixel(x, y);
+    let Some(alpha) = background_alpha(&pixel, color, threshold, ramp_end) else {
+        return false;
+    };
+
+    if alpha == 0 {
+        image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+    } else {
+        image.put_pixel(x, y, Rgba([pixel[0], pixel[1], pixel[2], alpha]));
+    }
+    true
+}
+
+fn is_background_like(
+    pixel: &Rgba<u8>,
+    color: [u8; 3],
+    threshold: f32,
+    ramp_end: f32,
+) -> bool {
+    pixel[3] > 0 && background_alpha(pixel, color, threshold, ramp_end).is_some()
 }
 
 /// Samples the actual background colour from an outer border strip and returns
@@ -195,7 +280,8 @@ fn sample_border_color(image: &RgbaImage) -> Option<[u8; 3]> {
     Some([reds[mid], greens[mid], blues[mid]])
 }
 
-/// Removes the chroma-key background via BFS from all four image edges.
+/// Removes the chroma-key background via 8-connected BFS from the image edges,
+/// then cleans up small enclosed near-background holes.
 ///
 /// The actual background colour is sampled from a border strip using per-channel
 /// median (robust to a character intruding into the strip). BFS then removes
@@ -212,7 +298,7 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
         return;
     }
 
-    // Trust the sampled border colour unconditionally: AI models routinely
+    // Sample before mutating the image. AI models routinely
     // ignore the prompted chroma-key hue and produce off-hue (white / plain /
     // natural) backgrounds instead, and matching the ideal key would then
     // remove nothing. BFS from the edges still protects any interior pixel not
@@ -220,19 +306,25 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
     // the sampled background is preserved unless it touches the frame edge.
     let actual_bg = sample_border_color(image).unwrap_or(key.rgb);
 
+    // The configured key is a stronger signal than the sampled colour. Apply
+    // its existing hard-threshold/anti-aliased ramp globally so enclosed key-
+    // coloured gaps (for example between strands of hair) cannot survive.
+    apply_chroma_key(image, key, 8);
+
     let mut processed = vec![false; (width * height) as usize];
+    let mut queued = vec![false; (width * height) as usize];
     let mut queue: VecDeque<(u32, u32)> = VecDeque::new();
 
     for x in 0..width {
-        queue.push_back((x, 0));
+        enqueue_if_unseen(&mut queue, &mut queued, x, 0, width);
         if height > 1 {
-            queue.push_back((x, height - 1));
+            enqueue_if_unseen(&mut queue, &mut queued, x, height - 1, width);
         }
     }
     for y in 1..height.saturating_sub(1) {
-        queue.push_back((0, y));
+        enqueue_if_unseen(&mut queue, &mut queued, 0, y, width);
         if width > 1 {
-            queue.push_back((width - 1, y));
+            enqueue_if_unseen(&mut queue, &mut queued, width - 1, y, width);
         }
     }
 
@@ -243,33 +335,108 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
         }
         processed[idx] = true;
 
-        let [r, g, b, a] = image.get_pixel(x, y).0;
-
-        if a == 0 {
-            push_neighbors(&mut queue, x, y, width, height);
-            continue;
+        if apply_background_alpha(image, x, y, actual_bg, FILL_THRESHOLD, ramp_end) {
+            push_neighbors(&mut queue, &mut queued, x, y, width, height);
         }
+    }
 
-        let distance = (squared_rgb_distance([r, g, b], actual_bg) as f32).sqrt();
+    remove_interior_background_holes(
+        image,
+        actual_bg,
+        &processed,
+        FILL_THRESHOLD,
+        ramp_end,
+    );
 
-        if distance > ramp_end {
-            continue;
+    for pixel in image.pixels_mut() {
+        if pixel[3] == 0 {
+            *pixel = Rgba([0, 0, 0, 0]);
         }
+    }
+}
 
-        let new_alpha = if distance <= FILL_THRESHOLD {
-            0u8
-        } else {
-            let ratio = (distance - FILL_THRESHOLD) / RAMP_WIDTH;
-            (f32::from(a) * ratio).round() as u8
-        };
+fn remove_interior_background_holes(
+    image: &mut RgbaImage,
+    actual_bg: [u8; 3],
+    edge_processed: &[bool],
+    threshold: f32,
+    ramp_end: f32,
+) {
+    const MAX_COMPONENT_SIZE: usize = 4096;
+    let width = image.width();
+    let height = image.height();
+    let mut visited = vec![false; (width * height) as usize];
 
-        if new_alpha == 0 {
-            image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
-        } else {
-            image.put_pixel(x, y, Rgba([r, g, b, new_alpha]));
+    for y in 0..height {
+        for x in 0..width {
+            let start_idx = (y * width + x) as usize;
+            if edge_processed[start_idx]
+                || visited[start_idx]
+                || !is_background_like(image.get_pixel(x, y), actual_bg, threshold, ramp_end)
+            {
+                continue;
+            }
+
+            let mut region = Vec::new();
+            let mut queue = VecDeque::new();
+            let mut touches_edge = false;
+            let mut oversized = false;
+            visited[start_idx] = true;
+            queue.push_back((x, y));
+
+            while let Some((current_x, current_y)) = queue.pop_front() {
+                let current_idx = (current_y * width + current_x) as usize;
+                if edge_processed[current_idx]
+                    || !is_background_like(
+                        image.get_pixel(current_x, current_y),
+                        actual_bg,
+                        threshold,
+                        ramp_end,
+                    )
+                {
+                    continue;
+                }
+
+                touches_edge |= current_x == 0
+                    || current_y == 0
+                    || current_x == width - 1
+                    || current_y == height - 1;
+                if region.len() < MAX_COMPONENT_SIZE {
+                    region.push((current_x, current_y));
+                } else {
+                    oversized = true;
+                }
+
+                for_each_neighbor(current_x, current_y, width, height, |neighbor_x, neighbor_y| {
+                    let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                    if edge_processed[neighbor_idx] || visited[neighbor_idx] {
+                        return;
+                    }
+                    visited[neighbor_idx] = true;
+                    if is_background_like(
+                        image.get_pixel(neighbor_x, neighbor_y),
+                        actual_bg,
+                        threshold,
+                        ramp_end,
+                    ) {
+                        queue.push_back((neighbor_x, neighbor_y));
+                    }
+                });
+            }
+
+            if !touches_edge && !oversized {
+                for (region_x, region_y) in region {
+                    apply_background_alpha(
+                        image,
+                        region_x,
+                        region_y,
+                        actual_bg,
+                        threshold,
+                        ramp_end,
+                    );
+                }
+            }
         }
-
-        push_neighbors(&mut queue, x, y, width, height);
     }
 }
 
@@ -963,5 +1130,107 @@ mod tests {
             }
         }
         assert_eq!(image.get_pixel(1, 1).0, [20, 30, 40, 255]);
+    }
+
+    #[test]
+    fn removes_a_diagonally_connected_sampled_background_pixel() {
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(16, 16, background);
+
+        for y in 1..4 {
+            for x in 1..4 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        image.put_pixel(1, 1, background);
+        image.put_pixel(2, 2, background);
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(2, 2).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn removes_a_small_enclosed_background_hole_like_a_hair_gap() {
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(32, 32, background);
+
+        for y in 8..24 {
+            for x in 8..24 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        for y in 12..20 {
+            for x in 12..20 {
+                image.put_pixel(x, y, background);
+            }
+        }
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(15, 15).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn preserves_an_oversized_enclosed_background_like_region() {
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(120, 120, background);
+
+        for y in 10..110 {
+            for x in 10..110 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        for y in 20..100 {
+            for x in 20..100 {
+                image.put_pixel(x, y, background);
+            }
+        }
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(60, 60).0, background.0);
+    }
+
+    #[test]
+    fn removes_an_enclosed_configured_key_colored_hair_gap() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(32, 32, background);
+
+        for y in 8..24 {
+            for x in 8..24 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        image.put_pixel(15, 15, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(15, 15).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn normalizes_rgb_for_every_fully_transparent_cleanup_pixel() {
+        let background = Rgba([12, 12, 12, 255]);
+        let foreground = Rgba([220, 220, 220, 255]);
+        let mut image = RgbaImage::from_pixel(32, 32, background);
+
+        for y in 8..24 {
+            for x in 8..24 {
+                image.put_pixel(x, y, foreground);
+            }
+        }
+        image.put_pixel(0, 0, Rgba([7, 8, 9, 0]));
+        image.put_pixel(15, 15, Rgba([40, 50, 60, 0]));
+
+        remove_chroma_background(&mut image, &CHROMA_KEY_CANDIDATES[0]);
+
+        assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(image.get_pixel(15, 15).0, [0, 0, 0, 0]);
     }
 }
