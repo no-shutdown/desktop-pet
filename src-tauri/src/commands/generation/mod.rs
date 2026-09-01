@@ -507,6 +507,14 @@ mod style_reference_validation_tests {
         );
         assert!(super::validate_style_reference_data_url("data:image/png;base64,not-base64").is_err());
         assert!(super::validate_style_reference_data_url("data:image/png;base64,").is_err());
+        assert!(super::validate_style_reference_data_url("data:image/;base64,QQ==").is_err());
+        assert!(
+            super::validate_style_reference_data_url("data:image/png;utf8;base64,QQ==").is_err()
+        );
+        assert!(
+            super::validate_style_reference_data_url("data:image/png;base64;base64,QQ==")
+                .is_err()
+        );
     }
 }
 
@@ -886,7 +894,18 @@ pub fn validate_style_reference_data_url(data_url: &str) -> Result<String, Strin
         .split_once(',')
         .ok_or_else(|| "style reference must be a complete data URL".to_string())?;
     let metadata = metadata.to_ascii_lowercase();
-    if !metadata.starts_with("data:image/") || !metadata.ends_with(";base64") {
+    let valid_image_metadata = metadata
+        .strip_prefix("data:image/")
+        .and_then(|metadata| metadata.strip_suffix(";base64"))
+        .map(|subtype| {
+            !subtype.is_empty()
+                && subtype.chars().all(|character| {
+                    character.is_ascii_alphanumeric()
+                        || matches!(character, '-' | '+' | '.' | '_')
+                })
+        })
+        .unwrap_or(false);
+    if !valid_image_metadata {
         return Err("style reference must be a base64 image data URL".to_string());
     }
 
