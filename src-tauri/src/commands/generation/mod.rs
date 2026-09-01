@@ -311,7 +311,16 @@ mod base_generation_core_tests {
             default_provider_config(),
             source_style(None).unwrap(),
             CHROMA_KEY_CANDIDATES[0],
-            move |_config: &ProviderConfig, prompt: &str| {
+            None,
+            None,
+            move |
+                _config: &ProviderConfig,
+                prompt: &str,
+                character_reference: Option<&str>,
+                style_reference: Option<&str>,
+            | {
+                assert_eq!(character_reference, None);
+                assert_eq!(style_reference, None);
                 *prompt_capture.lock().unwrap() = prompt.to_string();
                 let provider_image = provider_image.clone();
                 async move { Ok(provider_image) }
@@ -363,7 +372,16 @@ mod base_generation_core_tests {
             default_provider_config(),
             source_style(None).unwrap(),
             CHROMA_KEY_CANDIDATES[0],
-            move |_config: &ProviderConfig, prompt: &str| {
+            None,
+            None,
+            move |
+                _config: &ProviderConfig,
+                prompt: &str,
+                character_reference: Option<&str>,
+                style_reference: Option<&str>,
+            | {
+                assert_eq!(character_reference, None);
+                assert_eq!(style_reference, None);
                 *prompt_capture.lock().unwrap() = prompt.to_string();
                 let provider_image = provider_image.clone();
                 async move { Ok(provider_image) }
@@ -402,7 +420,16 @@ mod base_generation_core_tests {
             default_provider_config(),
             source_style(Some("stylized")).unwrap(),
             CHROMA_KEY_CANDIDATES[0],
-            move |_config: &ProviderConfig, prompt: &str| {
+            None,
+            None,
+            move |
+                _config: &ProviderConfig,
+                prompt: &str,
+                character_reference: Option<&str>,
+                style_reference: Option<&str>,
+            | {
+                assert_eq!(character_reference, None);
+                assert_eq!(style_reference, None);
                 *prompt_capture.lock().unwrap() = prompt.to_string();
                 let provider_image = provider_image.clone();
                 async move { Ok(provider_image) }
@@ -417,6 +444,139 @@ mod base_generation_core_tests {
             .lock()
             .unwrap()
             .contains("preserve the original art style"));
+    }
+
+    #[test]
+    fn production_base_core_passes_two_references_without_persisting_style_reference() {
+        const CHARACTER: &str = "data:image/jpeg;base64,CHARACTER";
+        const STYLE: &str = "data:image/png;base64,STYLE";
+
+        let temp = TempDir::new().unwrap();
+        let seen_prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_capture = Arc::clone(&seen_prompt);
+        let provider_image = completed_provider_image();
+
+        let base = run_async(generate_base_preview_core_at(
+            temp.path(),
+            "run-1".to_string(),
+            "a canonical pet".to_string(),
+            default_provider_config(),
+            source_style(None).unwrap(),
+            CHROMA_KEY_CANDIDATES[0],
+            Some(CHARACTER.to_string()),
+            Some(STYLE.to_string()),
+            move |
+                _config: &ProviderConfig,
+                prompt: &str,
+                character_reference: Option<&str>,
+                style_reference: Option<&str>,
+            | {
+                assert_eq!(character_reference, Some(CHARACTER));
+                assert_eq!(style_reference, Some(STYLE));
+                assert!(prompt.contains("image 2 is a pure style reference"));
+                *prompt_capture.lock().unwrap() = prompt.to_string();
+                let provider_image = provider_image.clone();
+                async move { Ok(provider_image) }
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(base.dimensions(), (API_FRAME_W, API_FRAME_H));
+        assert!(seen_prompt
+            .lock()
+            .unwrap()
+            .contains("image 2 is a pure style reference"));
+
+        let manifest = load_manifest(temp.path(), "run-1").unwrap();
+        assert_eq!(manifest.base.status, ArtifactStatus::Complete);
+        let manifest_json = fs::read_to_string(manifest_path(temp.path(), "run-1").unwrap())
+            .unwrap();
+        assert!(!manifest_json.contains("styleReference"));
+        assert!(!manifest_json.contains(STYLE));
+    }
+}
+
+#[cfg(test)]
+mod style_reference_validation_tests {
+    #[test]
+    fn style_reference_data_url_rejects_external_and_invalid_image_urls() {
+        assert!(super::validate_style_reference_data_url("https://example.com/style.png").is_err());
+        assert!(
+            super::validate_style_reference_data_url("data:text/plain;base64,QQ==").is_err()
+        );
+        assert!(super::validate_style_reference_data_url("data:image/png;base64,not-base64").is_err());
+        assert!(super::validate_style_reference_data_url("data:image/png;base64,").is_err());
+    }
+}
+
+#[cfg(test)]
+mod style_reference_capability_tests {
+    use super::{generate_base, provider_config, ProviderConfig};
+    use std::future::Future;
+
+    const CHARACTER: &str = "data:image/jpeg;base64,CHARACTER";
+    const STYLE: &str = "data:image/png;base64,STYLE";
+
+    fn run_async<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn assert_style_reference_rejected(config: ProviderConfig) {
+        let error = run_async(generate_base(
+            &config,
+            "prompt",
+            Some(CHARACTER),
+            Some(STYLE),
+        ))
+        .unwrap_err();
+
+        assert!(
+            error.contains("风格参考")
+                || error.contains("Qwen/Qwen-Image-Edit-2509")
+                || error.contains("wan2.6")
+                || error.contains("wan2.7"),
+            "style-reference capability error should explain the unsupported model: {error}"
+        );
+    }
+
+    #[test]
+    fn local_sd_rejects_style_reference_before_network() {
+        assert_style_reference_rejected(provider_config(
+            "localsd".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn legacy_wanxiang_rejects_style_reference_before_network() {
+        assert_style_reference_rejected(provider_config(
+            "wanxiang".to_string(),
+            Some("test API key".to_string()),
+            Some("wanx2.1-t2i-turbo".to_string()),
+            None,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn unsupported_siliconflow_base_model_rejects_style_reference_before_network() {
+        assert_style_reference_rejected(provider_config(
+            "siliconflow".to_string(),
+            Some("test API key".to_string()),
+            Some("Kwai-Kolors/Kolors".to_string()),
+            None,
+            None,
+            None,
+        ));
     }
 }
 
