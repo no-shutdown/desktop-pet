@@ -21,7 +21,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 
-use self::prompts::{build_base_prompt, build_row_prompt};
+use self::prompts::{build_base_prompt_with_style_reference, build_row_prompt};
 use self::providers::{clamp_denoising_strength, generate_base, generate_row};
 use self::run::{
     load_manifest as load_run_manifest, mark_base_complete as complete_base,
@@ -43,6 +43,7 @@ const DEFAULT_REFERENCE_MODEL: &str = "Qwen/Qwen-Image-Edit-2509";
 const DEFAULT_LOCAL_SD_URL: &str = "http://localhost:7860";
 const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
 const MAX_RUN_ERROR_BYTES: usize = 512;
+const MAX_REFERENCE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn validate_state_name(state: &str) -> Result<&'static StateDefinition, String> {
     state_definition(state).ok_or_else(|| format!("unknown generation state: {state}"))
@@ -513,39 +514,46 @@ mod style_reference_validation_tests {
 mod style_reference_capability_tests {
     use super::{generate_base, provider_config, ProviderConfig};
     use std::future::Future;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     const CHARACTER: &str = "data:image/jpeg;base64,CHARACTER";
     const STYLE: &str = "data:image/png;base64,STYLE";
 
-    fn run_async<F: Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(future)
+    fn no_op(_: *const ()) {}
+
+    fn clone_no_op(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &NO_OP_VTABLE)
     }
 
-    fn assert_style_reference_rejected(config: ProviderConfig) {
-        let error = run_async(generate_base(
-            &config,
+    static NO_OP_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_no_op, no_op, no_op, no_op);
+
+    fn poll_ready_style_reference_error(config: &ProviderConfig) -> String {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _runtime_guard = runtime.enter();
+        let future = generate_base(
+            config,
             "prompt",
             Some(CHARACTER),
             Some(STYLE),
-        ))
-        .unwrap_err();
-
-        assert!(
-            error.contains("风格参考")
-                || error.contains("Qwen/Qwen-Image-Edit-2509")
-                || error.contains("wan2.6")
-                || error.contains("wan2.7"),
-            "style-reference capability error should explain the unsupported model: {error}"
         );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NO_OP_VTABLE)) };
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(Err(error)) => error,
+            Poll::Ready(Ok(_)) => panic!("style-reference capability unexpectedly succeeded"),
+            Poll::Pending => panic!("style-reference capability check attempted async work"),
+        }
     }
 
     #[test]
     fn local_sd_rejects_style_reference_before_network() {
-        assert_style_reference_rejected(provider_config(
+        let error = poll_ready_style_reference_error(&provider_config(
             "localsd".to_string(),
             None,
             None,
@@ -553,11 +561,16 @@ mod style_reference_capability_tests {
             None,
             None,
         ));
+
+        assert!(
+            error.contains("风格参考"),
+            "Local SD capability error should mention style reference: {error}"
+        );
     }
 
     #[test]
     fn legacy_wanxiang_rejects_style_reference_before_network() {
-        assert_style_reference_rejected(provider_config(
+        let error = poll_ready_style_reference_error(&provider_config(
             "wanxiang".to_string(),
             Some("test API key".to_string()),
             Some("wanx2.1-t2i-turbo".to_string()),
@@ -565,18 +578,28 @@ mod style_reference_capability_tests {
             None,
             None,
         ));
+
+        assert!(
+            error.contains("wan2.6") || error.contains("wan2.7"),
+            "Wanxiang capability error should name a supported model: {error}"
+        );
     }
 
     #[test]
     fn unsupported_siliconflow_base_model_rejects_style_reference_before_network() {
-        assert_style_reference_rejected(provider_config(
+        let error = poll_ready_style_reference_error(&provider_config(
             "siliconflow".to_string(),
             Some("test API key".to_string()),
+            None,
             Some("Kwai-Kolors/Kolors".to_string()),
             None,
             None,
-            None,
         ));
+
+        assert!(
+            error.contains("Qwen/Qwen-Image-Edit-2509"),
+            "SiliconFlow capability error should name the supported model: {error}"
+        );
     }
 }
 
@@ -857,6 +880,33 @@ pub(crate) fn assemble_run_preview_at(
     })
 }
 
+pub fn validate_style_reference_data_url(data_url: &str) -> Result<String, String> {
+    let normalized = data_url.trim();
+    let (metadata, payload) = normalized
+        .split_once(',')
+        .ok_or_else(|| "style reference must be a complete data URL".to_string())?;
+    let metadata = metadata.to_ascii_lowercase();
+    if !metadata.starts_with("data:image/") || !metadata.ends_with(";base64") {
+        return Err("style reference must be a base64 image data URL".to_string());
+    }
+
+    let payload = payload.trim();
+    if payload.is_empty() {
+        return Err("style reference has an empty payload".to_string());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|error| format!("decode style reference: {error}"))?;
+    if decoded.is_empty() {
+        return Err("style reference has no decoded bytes".to_string());
+    }
+    if decoded.len() > MAX_REFERENCE_IMAGE_BYTES {
+        return Err("style reference exceeds the 16 MiB limit".to_string());
+    }
+
+    Ok(normalized.to_string())
+}
+
 async fn generate_base_preview_core_at<F, Fut>(
     app_data_dir: &Path,
     run_id: String,
@@ -864,10 +914,12 @@ async fn generate_base_preview_core_at<F, Fut>(
     provider_config: ProviderConfig,
     requested_source_style: Option<SourceStyle>,
     selected_key: ChromaKey,
+    character_reference_data_url: Option<String>,
+    style_reference_data_url: Option<String>,
     provider_call: F,
 ) -> Result<RgbaImage, String>
 where
-    F: FnOnce(&ProviderConfig, &str) -> Fut,
+    F: FnOnce(&ProviderConfig, &str, Option<&str>, Option<&str>) -> Fut,
     Fut: Future<Output = Result<Vec<u8>, String>>,
 {
     let provider = provider_config.provider.clone();
@@ -887,13 +939,20 @@ where
     save_manifest(app_data_dir, &manifest)?;
     begin_base(app_data_dir, &run_id)?;
 
-    let prompt = build_base_prompt(
+    let prompt = build_base_prompt_with_style_reference(
         &manifest.base_prompt,
         manifest.source_style,
         selected_key.hex,
         selected_key.name,
+        style_reference_data_url.is_some(),
     );
-    let provider_result = provider_call(&provider_config, &prompt).await;
+    let provider_result = provider_call(
+        &provider_config,
+        &prompt,
+        character_reference_data_url.as_deref(),
+        style_reference_data_url.as_deref(),
+    )
+    .await;
     finish_base_result_at(
         app_data_dir,
         &run_id,
@@ -916,10 +975,18 @@ pub async fn generate_base_preview(
     local_sd_url: Option<String>,
     denoising_strength: Option<f32>,
     source_style: Option<String>,
+    style_reference_data_url: Option<String>,
 ) -> Result<BasePreviewResult, String> {
     let data_dir = app_data_dir(&app)?;
     let provider = provider_name(&image_provider)?;
     let requested_source_style = self::source_style(source_style.as_deref())?;
+    let style_reference_data_url = style_reference_data_url
+        .as_deref()
+        .map(validate_style_reference_data_url)
+        .transpose()?;
+    if style_reference_data_url.is_some() && reference_data_url.is_none() {
+        return Err("风格参考图需要原始人物参考图".to_string());
+    }
     let reference = reference_data_url
         .as_deref()
         .map(decode_reference_image)
@@ -941,10 +1008,22 @@ pub async fn generate_base_preview(
         config,
         requested_source_style,
         selected_key,
-        |config, prompt| {
+        reference_data_url,
+        style_reference_data_url,
+        |config, prompt, character_reference, style_reference| {
             let config = config.clone();
             let prompt = prompt.to_string();
-            async move { generate_base(&config, &prompt).await }
+            let character_reference = character_reference.map(str::to_owned);
+            let style_reference = style_reference.map(str::to_owned);
+            async move {
+                generate_base(
+                    &config,
+                    &prompt,
+                    character_reference.as_deref(),
+                    style_reference.as_deref(),
+                )
+                .await
+            }
         },
     )
     .await?;

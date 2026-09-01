@@ -993,26 +993,62 @@ where
         .map_err(|_| "image generation operation timed out after 120 seconds".to_string())?
 }
 
-pub async fn generate_base(config: &ProviderConfig, prompt: &str) -> Result<Vec<u8>, String> {
+pub async fn generate_base(
+    config: &ProviderConfig,
+    prompt: &str,
+    character_reference_data_url: Option<&str>,
+    style_reference_data_url: Option<&str>,
+) -> Result<Vec<u8>, String> {
     validate_provider(config)?;
+    if style_reference_data_url.is_some() && character_reference_data_url.is_none() {
+        return Err("风格参考图需要原始人物参考图".to_string());
+    }
 
     run_with_operation_deadline(async {
         match config.provider.trim() {
             "siliconflow" => {
-                let body = siliconflow_base_body(&config.base_model, prompt, 256, 256);
+                let body = if let Some(style) = style_reference_data_url {
+                    let character = character_reference_data_url
+                        .ok_or_else(|| "风格参考图需要原始人物参考图".to_string())?;
+                    siliconflow_base_body_with_references(
+                        &config.reference_model,
+                        prompt,
+                        character,
+                        style,
+                    )?
+                } else {
+                    siliconflow_base_body(&config.base_model, prompt, 256, 256)
+                };
                 generate_siliconflow(config, body).await
             }
             "wanxiang" => {
                 let endpoint = wanxiang_endpoint_for_base(&config.base_model);
-                let body = wanxiang_base_body(
-                    &config.base_model,
-                    prompt,
-                    WANXIANG_BASE_SIZE.0,
-                    WANXIANG_BASE_SIZE.1,
-                );
+                let body = if let Some(style) = style_reference_data_url {
+                    let character = character_reference_data_url
+                        .ok_or_else(|| "风格参考图需要原始人物参考图".to_string())?;
+                    wanxiang_base_body_with_references(
+                        &config.base_model,
+                        prompt,
+                        character,
+                        style,
+                    )?
+                } else {
+                    wanxiang_base_body(
+                        &config.base_model,
+                        prompt,
+                        WANXIANG_BASE_SIZE.0,
+                        WANXIANG_BASE_SIZE.1,
+                    )
+                };
                 generate_wanxiang(config, endpoint, body).await
             }
             "localsd" | "local_sd" => {
+                if style_reference_data_url.is_some() {
+                    return Err(
+                        "Local SD 暂不支持风格参考图，请切换到 SiliconFlow Qwen 或 Wanxiang wan2.6/wan2.7"
+                            .to_string(),
+                    );
+                }
                 let body = local_sd_base_body(prompt, 256, 256);
                 generate_local_sd(local_sd_endpoint(&config.local_sd_url, "txt2img"), body).await
             }
@@ -1542,7 +1578,7 @@ mod tests {
             denoising_strength: 0.55,
         };
         assert_eq!(
-            poll_error(generate_base(&missing_key, "prompt")),
+            poll_error(generate_base(&missing_key, "prompt", None, None)),
             "Wanxiang API key is required"
         );
         assert_eq!(
@@ -1562,7 +1598,7 @@ mod tests {
             denoising_strength: 0.55,
         };
         assert_eq!(
-            poll_error(generate_base(&unsupported, "prompt")),
+            poll_error(generate_base(&unsupported, "prompt", None, None)),
             "unsupported image provider: pollinations"
         );
 
@@ -1747,7 +1783,7 @@ mod tests {
             denoising_strength: 0.55,
         };
 
-        let error = poll_error(generate_base(&config, "prompt"));
+        let error = poll_error(generate_base(&config, "prompt", None, None));
         assert!(error.starts_with("unsupported image provider:"));
         assert!(error.len() <= MAX_ERROR_DETAIL_BYTES);
         assert!(!error.contains("HTTPS://"));
