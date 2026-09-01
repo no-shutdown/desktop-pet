@@ -29,7 +29,7 @@ use self::run::{
     mark_state_complete as complete_state, mark_state_generating as begin_state,
 };
 use self::sprite::{
-    assemble_rows, build_row_reference, choose_chroma_key, chroma_key_from_hex,
+    assemble_rows, build_row_reference, build_static_sprite_row, choose_chroma_key, chroma_key_from_hex,
     ensure_wanxiang_reference_size, image_to_data_url, normalize_base_image,
     normalize_horizontal_row, validate_sprite_row, ChromaKey,
 };
@@ -44,6 +44,7 @@ const DEFAULT_LOCAL_SD_URL: &str = "http://localhost:7860";
 const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
 const MAX_RUN_ERROR_BYTES: usize = 512;
 const MAX_REFERENCE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REFERENCE_BASE64_BYTES: usize = ((MAX_REFERENCE_IMAGE_BYTES + 2) / 3) * 4;
 
 pub fn validate_state_name(state: &str) -> Result<&'static StateDefinition, String> {
     state_definition(state).ok_or_else(|| format!("unknown generation state: {state}"))
@@ -448,6 +449,46 @@ mod base_generation_core_tests {
     }
 
     #[test]
+    fn production_base_core_keeps_character_reference_without_style_reference_on_legacy_path() {
+        const CHARACTER: &str = "data:image/jpeg;base64,CHARACTER";
+
+        let temp = TempDir::new().unwrap();
+        let seen_prompt = Arc::new(Mutex::new(String::new()));
+        let prompt_capture = Arc::clone(&seen_prompt);
+        let provider_image = completed_provider_image();
+
+        run_async(generate_base_preview_core_at(
+            temp.path(),
+            "run-1".to_string(),
+            "a canonical pet".to_string(),
+            default_provider_config(),
+            source_style(None).unwrap(),
+            CHROMA_KEY_CANDIDATES[0],
+            Some(CHARACTER.to_string()),
+            None,
+            move |
+                _config: &ProviderConfig,
+                prompt: &str,
+                character_reference: Option<&str>,
+                style_reference: Option<&str>,
+            | {
+                assert_eq!(character_reference, Some(CHARACTER));
+                assert_eq!(style_reference, None);
+                assert!(!prompt.contains("image 2 is a pure style reference"));
+                *prompt_capture.lock().unwrap() = prompt.to_string();
+                let provider_image = provider_image.clone();
+                async move { Ok(provider_image) }
+            },
+        ))
+        .unwrap();
+
+        assert!(!seen_prompt
+            .lock()
+            .unwrap()
+            .contains("image 2 is a pure style reference"));
+    }
+
+    #[test]
     fn production_base_core_passes_two_references_without_persisting_style_reference() {
         const CHARACTER: &str = "data:image/jpeg;base64,CHARACTER";
         const STYLE: &str = "data:image/png;base64,STYLE";
@@ -516,6 +557,23 @@ mod style_reference_validation_tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn style_reference_data_url_trims_valid_input() {
+        assert_eq!(
+            super::validate_style_reference_data_url("  data:image/png;base64,QQ==  ").unwrap(),
+            "data:image/png;base64,QQ=="
+        );
+    }
+
+    #[test]
+    fn style_reference_data_url_rejects_oversized_payload_before_decode() {
+        let oversized_payload = "A".repeat(super::MAX_REFERENCE_BASE64_BYTES + 4);
+        let data_url = format!("data:image/png;base64,{oversized_payload}");
+        let error = super::validate_style_reference_data_url(&data_url).unwrap_err();
+
+        assert!(error.contains("16 MiB"));
+    }
 }
 
 #[cfg(test)]
@@ -536,18 +594,17 @@ mod style_reference_capability_tests {
     static NO_OP_VTABLE: RawWakerVTable =
         RawWakerVTable::new(clone_no_op, no_op, no_op, no_op);
 
-    fn poll_ready_style_reference_error(config: &ProviderConfig) -> String {
+    fn poll_ready_style_reference_error(
+        config: &ProviderConfig,
+        character_reference: Option<&str>,
+        style_reference: Option<&str>,
+    ) -> String {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .unwrap();
         let _runtime_guard = runtime.enter();
-        let future = generate_base(
-            config,
-            "prompt",
-            Some(CHARACTER),
-            Some(STYLE),
-        );
+        let future = generate_base(config, "prompt", character_reference, style_reference);
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &NO_OP_VTABLE)) };
         let mut context = Context::from_waker(&waker);
         let mut future = Box::pin(future);
@@ -561,14 +618,18 @@ mod style_reference_capability_tests {
 
     #[test]
     fn local_sd_rejects_style_reference_before_network() {
-        let error = poll_ready_style_reference_error(&provider_config(
-            "localsd".to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ));
+        let error = poll_ready_style_reference_error(
+            &provider_config(
+                "localsd".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            Some(CHARACTER),
+            Some(STYLE),
+        );
 
         assert!(
             error.contains("风格参考"),
@@ -578,14 +639,18 @@ mod style_reference_capability_tests {
 
     #[test]
     fn legacy_wanxiang_rejects_style_reference_before_network() {
-        let error = poll_ready_style_reference_error(&provider_config(
-            "wanxiang".to_string(),
-            Some("test API key".to_string()),
-            Some("wanx2.1-t2i-turbo".to_string()),
-            None,
-            None,
-            None,
-        ));
+        let error = poll_ready_style_reference_error(
+            &provider_config(
+                "wanxiang".to_string(),
+                Some("test API key".to_string()),
+                Some("wanx2.1-t2i-turbo".to_string()),
+                None,
+                None,
+                None,
+            ),
+            Some(CHARACTER),
+            Some(STYLE),
+        );
 
         assert!(
             error.contains("wan2.6") || error.contains("wan2.7"),
@@ -595,19 +660,41 @@ mod style_reference_capability_tests {
 
     #[test]
     fn unsupported_siliconflow_base_model_rejects_style_reference_before_network() {
-        let error = poll_ready_style_reference_error(&provider_config(
-            "siliconflow".to_string(),
-            Some("test API key".to_string()),
-            None,
-            Some("Kwai-Kolors/Kolors".to_string()),
-            None,
-            None,
-        ));
+        let error = poll_ready_style_reference_error(
+            &provider_config(
+                "siliconflow".to_string(),
+                Some("test API key".to_string()),
+                None,
+                Some("Kwai-Kolors/Kolors".to_string()),
+                None,
+                None,
+            ),
+            Some(CHARACTER),
+            Some(STYLE),
+        );
 
         assert!(
             error.contains("Qwen/Qwen-Image-Edit-2509"),
             "SiliconFlow capability error should name the supported model: {error}"
         );
+    }
+
+    #[test]
+    fn style_reference_requires_a_character_reference_before_network() {
+        let error = poll_ready_style_reference_error(
+            &provider_config(
+                "localsd".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            None,
+            Some(STYLE),
+        );
+
+        assert_eq!(error, "风格参考图需要原始人物参考图");
     }
 }
 
@@ -831,6 +918,16 @@ pub(crate) fn finish_state_result_at(
             ));
         }
     };
+    finish_normalized_state_row_at(app_data_dir, run_id, state, row, api_key)
+}
+
+pub(crate) fn finish_normalized_state_row_at(
+    app_data_dir: &Path,
+    run_id: &str,
+    state: &str,
+    row: RgbaImage,
+    api_key: Option<&str>,
+) -> Result<RgbaImage, String> {
     if let Err(error) = validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT) {
         return Err(mark_command_failed(
             app_data_dir,
@@ -912,6 +1009,9 @@ pub fn validate_style_reference_data_url(data_url: &str) -> Result<String, Strin
     let payload = payload.trim();
     if payload.is_empty() {
         return Err("style reference has an empty payload".to_string());
+    }
+    if payload.len() > MAX_REFERENCE_BASE64_BYTES {
+        return Err("style reference exceeds the 16 MiB limit".to_string());
     }
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(payload)
@@ -1071,7 +1171,11 @@ pub async fn generate_state_row(
 ) -> Result<StateRowResult, String> {
     let data_dir = app_data_dir(&app)?;
     let state_definition = validate_state_name(&state)?;
-    let provider = provider_name(&image_provider)?;
+    let provider = if state_definition.key == "idle" {
+        None
+    } else {
+        Some(provider_name(&image_provider)?)
+    };
     let manifest = load_run_manifest(&data_dir, &run_id)?;
     // Rows may use a different provider than the base (e.g. base via Wanxiang, rows via
     // SiliconFlow) — do not enforce a provider match here. The base's provider stays
@@ -1083,38 +1187,49 @@ pub async fn generate_state_row(
     if base.dimensions() != (API_FRAME_W, API_FRAME_H) {
         return Err("canonical base image has invalid dimensions".to_string());
     }
-    let row_reference = build_row_reference(&base);
-    let row_reference_sized = if provider == "wanxiang" {
-        ensure_wanxiang_reference_size(&row_reference, &selected_key)
-    } else {
-        row_reference
-    };
-    let row_reference_data_url = image_to_data_url(&row_reference_sized)?;
     begin_state(&data_dir, &run_id, &state)?;
 
-    let prompt = build_row_prompt(
-        &manifest.base_prompt,
-        manifest.source_style,
-        selected_key.hex,
-        selected_key.name,
-        state_definition,
-    );
-    let config = provider_config(
-        provider,
-        image_api_key.clone(),
-        None,
-        reference_model,
-        local_sd_url,
-        denoising_strength,
-    );
-    let row = finish_state_result_at(
-        &data_dir,
-        &run_id,
-        &state,
-        &selected_key,
-        generate_row(&config, &prompt, &row_reference_data_url).await,
-        image_api_key.as_deref(),
-    )?;
+    let row = if state_definition.key == "idle" {
+        finish_normalized_state_row_at(
+            &data_dir,
+            &run_id,
+            &state,
+            build_static_sprite_row(&base),
+            None,
+        )?
+    } else {
+        let provider = provider.expect("animated states require an image provider");
+        let row_reference = build_row_reference(&base);
+        let row_reference_sized = if provider == "wanxiang" {
+            ensure_wanxiang_reference_size(&row_reference, &selected_key)
+        } else {
+            row_reference
+        };
+        let row_reference_data_url = image_to_data_url(&row_reference_sized)?;
+        let prompt = build_row_prompt(
+            &manifest.base_prompt,
+            manifest.source_style,
+            selected_key.hex,
+            selected_key.name,
+            state_definition,
+        );
+        let config = provider_config(
+            provider,
+            image_api_key.clone(),
+            None,
+            reference_model,
+            local_sd_url,
+            denoising_strength,
+        );
+        finish_state_result_at(
+            &data_dir,
+            &run_id,
+            &state,
+            &selected_key,
+            generate_row(&config, &prompt, &row_reference_data_url).await,
+            image_api_key.as_deref(),
+        )?
+    };
     emit_progress(
         &app,
         generation_progress_payload(&run_id, "state", Some(&state), 1, 1),
@@ -1161,6 +1276,16 @@ fn save_sprite_sheet_png(pet_dir: &Path, state: &str, sheet: &RgbaImage) -> Resu
         .map_err(|error| error.to_string())
 }
 
+fn require_fixed_frame_count(state: &str, frame_count: u32) -> Result<(), String> {
+    if frame_count == DEFAULT_FRAME_COUNT {
+        Ok(())
+    } else {
+        Err(format!(
+            "{state} state must contain exactly {DEFAULT_FRAME_COUNT} frames (received {frame_count})"
+        ))
+    }
+}
+
 #[tauri::command]
 pub async fn save_combined_sprite_sheet(
     app: tauri::AppHandle,
@@ -1188,11 +1313,14 @@ pub async fn save_combined_sprite_sheet(
         ("acting_cute", acting_cute_frames, 110),
         ("working", working_frames, 120),
     ];
+    for (state, frame_count, _) in rows {
+        require_fixed_frame_count(state, frame_count)?;
+    }
     let mut result = HashMap::new();
-    for (row_index, (state, frame_count, delay_ms)) in rows.iter().enumerate() {
+    for (row_index, (state, _, delay_ms)) in rows.iter().enumerate() {
         let y_start = row_index as u32 * (frame_h + row_gap);
         let row_width = frame_w
-            .checked_mul(*frame_count)
+            .checked_mul(DEFAULT_FRAME_COUNT)
             .ok_or_else(|| format!("{state} frame width overflow"))?;
         if y_start.checked_add(frame_h).is_none() || y_start + frame_h > rgba.height() {
             return Err(format!("image height is insufficient for {state} row"));
@@ -1205,9 +1333,9 @@ pub async fn save_combined_sprite_sheet(
         result.insert(
             state.to_string(),
             SpriteStateInfo {
-                cols: *frame_count as usize,
+                cols: DEFAULT_FRAME_COUNT as usize,
                 rows: 1,
-                frame_count: *frame_count as usize,
+                frame_count: DEFAULT_FRAME_COUNT as usize,
                 frame_w,
                 frame_h,
                 delay_ms: *delay_ms,
@@ -1246,12 +1374,11 @@ fn write_frame_selections_to_dir(
     ];
     let mut result = HashMap::new();
     for (state, cells, delay_ms) in &state_entries {
-        if cells.is_empty() {
-            return Err(format!("{state} state has no selected frames"));
-        }
-        let frame_count = cells.len() as u32;
+        let frame_count = u32::try_from(cells.len())
+            .map_err(|_| format!("{state} state has too many selected frames"))?;
+        require_fixed_frame_count(state, frame_count)?;
         let width = frame_w
-            .checked_mul(frame_count)
+            .checked_mul(DEFAULT_FRAME_COUNT)
             .ok_or_else(|| format!("{state} frame width overflow"))?;
         let mut sheet = RgbaImage::new(width, frame_h);
         for (index, cell) in cells.iter().enumerate() {
@@ -1286,9 +1413,9 @@ fn write_frame_selections_to_dir(
         result.insert(
             state.to_string(),
             SpriteStateInfo {
-                cols: frame_count as usize,
+                cols: DEFAULT_FRAME_COUNT as usize,
                 rows: 1,
-                frame_count: frame_count as usize,
+                frame_count: DEFAULT_FRAME_COUNT as usize,
                 frame_w,
                 frame_h,
                 delay_ms: *delay_ms,
@@ -1518,7 +1645,11 @@ mod command_tests {
     fn stages_selected_frames_under_the_run_without_creating_pets() {
         let temp = TempDir::new().unwrap();
         let source = RgbaImage::from_pixel(2, 2, Rgba([20, 30, 40, 255]));
-        let cell = || vec![FrameCell { col: 0, row: 0 }];
+        let cells = || {
+            (0..DEFAULT_FRAME_COUNT)
+                .map(|_| FrameCell { col: 0, row: 0 })
+                .collect()
+        };
 
         let result = stage_frame_selections_at(
             temp.path(),
@@ -1528,14 +1659,14 @@ mod command_tests {
             2,
             0,
             0,
-            cell(),
-            cell(),
-            cell(),
-            cell(),
+            cells(),
+            cells(),
+            cells(),
+            cells(),
         )
         .unwrap();
 
-        assert_eq!(result["idle"].frame_count, 1);
+        assert_eq!(result["idle"].frame_count, DEFAULT_FRAME_COUNT as usize);
         for state in ["idle", "sleeping", "acting_cute", "working"] {
             assert!(
                 run_dir(temp.path(), "manual-run")
@@ -1545,6 +1676,34 @@ mod command_tests {
             );
         }
         assert!(!temp.path().join("pets").exists());
+    }
+
+    #[test]
+    fn staging_rejects_any_state_without_exactly_eight_frames() {
+        let temp = TempDir::new().unwrap();
+        let source = RgbaImage::from_pixel(2, 2, Rgba([20, 30, 40, 255]));
+        let cells = |count| {
+            (0..count)
+                .map(|_| FrameCell { col: 0, row: 0 })
+                .collect::<Vec<_>>()
+        };
+
+        let error = stage_frame_selections_at(
+            temp.path(),
+            "manual-run",
+            &data_url(&source),
+            2,
+            2,
+            0,
+            0,
+            cells(DEFAULT_FRAME_COUNT - 1),
+            cells(DEFAULT_FRAME_COUNT),
+            cells(DEFAULT_FRAME_COUNT),
+            cells(DEFAULT_FRAME_COUNT),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("idle state must contain exactly 8 frames"));
     }
 
     #[test]

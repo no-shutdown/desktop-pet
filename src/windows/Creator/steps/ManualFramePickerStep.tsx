@@ -46,6 +46,7 @@ const ACTION_META = PET_STATE_CATALOG.map((definition) => ({
   ...definition,
   color: ACTION_COLORS[definition.key],
 }));
+const FIXED_FRAME_COUNT = 8;
 
 function createEmptySelections(): Selections {
   return PET_STATES.reduce((result, state) => {
@@ -134,15 +135,8 @@ export default function ManualFramePickerStep({
 
     if (!loadedImg || loadedImageIdentityRef.current !== imageIdentityRef.current) return;
 
-    const frameCounts: Record<PetState, number> = {
-      idle: initialConfig.idleFrames ?? 0,
-      sleeping: initialConfig.sleepingFrames ?? 0,
-      acting_cute: initialConfig.actingCuteFrames ?? 0,
-      working: initialConfig.workingFrames ?? 0,
-    };
-
     setSelections(PET_STATES.reduce((result, state, row) => {
-      result[state] = Array.from({ length: frameCounts[state] }, (_, col) => ({ col, row }));
+      result[state] = Array.from({ length: FIXED_FRAME_COUNT }, (_, col) => ({ col, row }));
       return result;
     }, createEmptySelections()));
   }, [
@@ -280,6 +274,7 @@ export default function ManualFramePickerStep({
         }
 
         // Not selected anywhere -> add to current action.
+        if (currentList.length >= FIXED_FRAME_COUNT) return prev;
         return {
           ...prev,
           [activeAction]: [...currentList, clicked],
@@ -349,7 +344,7 @@ export default function ManualFramePickerStep({
     }
   }
 
-  const allReady = ACTION_META.every(({ key }) => selections[key].length > 0);
+  const allReady = ACTION_META.every(({ key }) => selections[key].length === FIXED_FRAME_COUNT);
   const canSave  = !!dataUrl && !saving && allReady;
 
   const THUMB_SIZE = 40;
@@ -598,9 +593,9 @@ export default function ManualFramePickerStep({
                 <span style={{ color: '#38a169' }}>各动作已就绪</span>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  {ACTION_META.filter(({ key }) => selections[key].length === 0).map(({ key, label }) => (
+                  {ACTION_META.filter(({ key }) => selections[key].length !== FIXED_FRAME_COUNT).map(({ key, label }) => (
                     <span key={key} style={{ color: '#e53e3e' }}>
-                      {label} 需要至少1帧
+                      {label} 需要 8 帧（当前 {selections[key].length} 帧）
                     </span>
                   ))}
                 </div>

@@ -209,16 +209,15 @@ describe('ManualFramePickerStep', () => {
 
     await waitFor(() => {
       for (const state of EXPECTED_STATES) {
-        expect(screen.getByRole('button', { name: actionButtonName(state, 1) })).toBeTruthy();
+        expect(screen.getByRole('button', { name: actionButtonName(state, 8) })).toBeTruthy();
       }
-      expect(screen.queryByRole('button', { name: actionButtonName('idle', 8) })).toBeNull();
     });
 
     const gridInputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
     expect(gridInputs.map((input) => input.value)).toEqual(['96', '80', '4', '6']);
   });
 
-  it('preserves external grid gaps and allows selecting cells after upload', async () => {
+  it('preserves external grid gaps and requires eight selected cells per action', async () => {
     MockImage.nextSize = { width: 512, height: 256 };
     const { container } = render(<ManualFramePickerStep {...defaultProps} />);
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -246,17 +245,10 @@ describe('ManualFramePickerStep', () => {
     expect(gridInputs.map((input) => input.value)).toEqual(['128', '64', '4', '8']);
 
     fireEvent.click(screen.getByRole('button', { name: /确认导入/ }));
-    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
-      'stage_frame_selections',
-      expect.objectContaining({
-        colGap: 4,
-        rowGap: 8,
-        idleCells: [{ col: 0, row: 0 }],
-        sleepingCells: [{ col: 1, row: 0 }],
-        actingCuteCells: [{ col: 2, row: 0 }],
-        workingCells: [{ col: 0, row: 1 }],
-      }),
-    ));
+    const buttons = screen.getAllByRole('button');
+    const saveButton = buttons[buttons.length - 1]!;
+    expect(saveButton).toBeDisabled();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('clears old external selections before saving selections from the replacement image', async () => {
@@ -305,18 +297,10 @@ describe('ManualFramePickerStep', () => {
       fireEvent.click(canvas, replacementCells[index]);
     }
 
-    const saveButtons = screen.getAllByRole('button');
-    fireEvent.click(saveButtons[saveButtons.length - 1]);
-    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
-      'stage_frame_selections',
-      expect.objectContaining({
-        dataUrl: 'data:image/png;base64,IMAGE_B',
-        idleCells: [{ col: 3, row: 0 }],
-        sleepingCells: [{ col: 2, row: 0 }],
-        actingCuteCells: [{ col: 1, row: 0 }],
-        workingCells: [{ col: 2, row: 1 }],
-      }),
-    ));
+    const buttons = screen.getAllByRole('button');
+    const saveButton = buttons[buttons.length - 1]!;
+    expect(saveButton).toBeDisabled();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('does not reapply generated selections after replacing the generated image with an external upload', async () => {
@@ -411,7 +395,7 @@ describe('ManualFramePickerStep', () => {
 
     await waitFor(() => {
       for (const state of EXPECTED_STATES) {
-        expect(screen.getByRole('button', { name: actionButtonName(state, 2) })).toBeTruthy();
+        expect(screen.getByRole('button', { name: actionButtonName(state, 8) })).toBeTruthy();
       }
     });
   });

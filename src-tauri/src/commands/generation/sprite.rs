@@ -571,7 +571,9 @@ pub fn normalize_horizontal_row(bytes: &[u8], key: &ChromaKey) -> Result<RgbaIma
         image::load_from_memory(bytes).map_err(|error| format!("decode image: {error}"))?;
     let mut source = decoded.to_rgba8();
     remove_chroma_background(&mut source, key);
-    Ok(slice_row_into_frames(&source, DEFAULT_FRAME_COUNT))
+    let mut row = slice_row_into_frames(&source, DEFAULT_FRAME_COUNT);
+    align_frames_to_shared_anchor(&mut row, DEFAULT_FRAME_COUNT);
+    Ok(row)
 }
 
 /// Splits a raw row image (background already removed) into `frame_count`
@@ -684,6 +686,101 @@ fn slice_row_into_frames(source: &RgbaImage, frame_count: u32) -> RgbaImage {
     dst
 }
 
+/// Removes whole-frame translation introduced by an image model while keeping
+/// the pose inside each frame intact. The bottom support band (feet, desk edge,
+/// chair legs) is more stable than a single edge pixel, which can be a drifting
+/// chair leg in sleeping scenes, and it ignores upper-body breathing motion.
+fn align_frames_to_shared_anchor(row: &mut RgbaImage, frame_count: u32) {
+    if frame_count == 0 || row.height() != FRAME_H || row.width() != FRAME_W * frame_count {
+        return;
+    }
+
+    let mut anchors = Vec::with_capacity(frame_count as usize);
+    for frame_index in 0..frame_count {
+        let frame = image::imageops::crop_imm(row, frame_index * FRAME_W, 0, FRAME_W, FRAME_H)
+            .to_image();
+        let Some(anchor) = frame_ground_anchor(&frame) else {
+            return;
+        };
+        anchors.push(anchor);
+    }
+
+    let mut centers = anchors.iter().map(|(center, _)| *center).collect::<Vec<_>>();
+    let mut baselines = anchors.iter().map(|(_, baseline)| *baseline).collect::<Vec<_>>();
+    centers.sort_unstable();
+    baselines.sort_unstable();
+    let target_center = centers[centers.len() / 2];
+    let target_baseline = baselines[baselines.len() / 2];
+
+    for (frame_index, (center, baseline)) in anchors.into_iter().enumerate() {
+        let start_x = frame_index as u32 * FRAME_W;
+        let frame = image::imageops::crop_imm(row, start_x, 0, FRAME_W, FRAME_H).to_image();
+        let Some((min_x, min_y, max_x, max_y)) = find_visible_bounds(&frame) else {
+            continue;
+        };
+        let shift_x = (i64::from(target_center) - i64::from(center))
+            .clamp(-i64::from(min_x), i64::from(FRAME_W - 1 - max_x));
+        let shift_y = (i64::from(target_baseline) - i64::from(baseline))
+            .clamp(-i64::from(min_y), i64::from(FRAME_H - 1 - max_y));
+        let mut aligned = RgbaImage::new(FRAME_W, FRAME_H);
+
+        for (x, y, pixel) in frame.enumerate_pixels() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let destination_x = i64::from(x) + shift_x;
+            let destination_y = i64::from(y) + shift_y;
+            if destination_x >= 0
+                && destination_x < i64::from(FRAME_W)
+                && destination_y >= 0
+                && destination_y < i64::from(FRAME_H)
+            {
+                aligned.put_pixel(destination_x as u32, destination_y as u32, *pixel);
+            }
+        }
+
+        image::imageops::replace(row, &aligned, i64::from(start_x), 0);
+    }
+}
+
+fn frame_ground_anchor(frame: &RgbaImage) -> Option<(u32, u32)> {
+    const SUPPORT_BAND_HEIGHT: u32 = 6;
+    let lower_band_start = frame.height().saturating_sub(SUPPORT_BAND_HEIGHT);
+    let mut min_x = frame.width();
+    let mut max_x = 0;
+    let mut found = false;
+    let mut baseline = None;
+
+    for y in lower_band_start..frame.height() {
+        for x in 0..frame.width() {
+            if frame.get_pixel(x, y)[3] == 0 {
+                continue;
+            }
+            found = true;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            baseline = Some(y);
+        }
+    }
+
+    if found {
+        return Some(((min_x + max_x) / 2, baseline.unwrap()));
+    }
+
+    // Very small or unusually high content may not reach the lower quarter;
+    // retain the previous conservative fallback in that case.
+    for y in (0..frame.height()).rev() {
+        let visible_x = (0..frame.width())
+            .filter(|&x| frame.get_pixel(x, y)[3] > 0)
+            .collect::<Vec<_>>();
+        if let (Some(min_x), Some(max_x)) = (visible_x.first(), visible_x.last()) {
+            return Some(((*min_x + *max_x) / 2, y));
+        }
+    }
+
+    None
+}
+
 fn find_visible_bounds(image: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
     let mut x_min = image.width();
     let mut x_max = 0u32;
@@ -771,6 +868,21 @@ pub fn build_row_reference(base: &RgbaImage) -> RgbaImage {
     }
 
     reference
+}
+
+/// Idle is a deliberate static hold, so it must reuse the canonical base
+/// instead of asking a provider to redraw eight approximate copies.
+pub fn build_static_sprite_row(base: &RgbaImage) -> RgbaImage {
+    let frame = DynamicImage::ImageRgba8(base.clone())
+        .resize_exact(FRAME_W, FRAME_H, FilterType::Lanczos3)
+        .to_rgba8();
+    let mut row = RgbaImage::new(FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H);
+
+    for frame_index in 0..DEFAULT_FRAME_COUNT {
+        image::imageops::replace(&mut row, &frame, i64::from(frame_index * FRAME_W), 0);
+    }
+
+    row
 }
 
 pub fn normalize_base_image(bytes: &[u8], key: &ChromaKey) -> Result<RgbaImage, String> {
@@ -874,7 +986,7 @@ fn squared_rgb_distance(left: [u8; 3], right: [u8; 3]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_chroma_key, assemble_rows, build_row_reference, choose_chroma_key,
+        apply_chroma_key, assemble_rows, build_row_reference, build_static_sprite_row, choose_chroma_key,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
         remove_chroma_background, validate_sprite_row, ChromaKey,
         CHROMA_KEY_CANDIDATES,
@@ -980,6 +1092,32 @@ mod tests {
                 reference.get_pixel(center_x, API_FRAME_H / 2).0,
                 [20, 30, 40, 255]
             );
+        }
+    }
+
+    #[test]
+    fn builds_idle_row_from_eight_identical_canonical_base_frames() {
+        let mut base = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+        for x in 64..192 {
+            for y in 24..240 {
+                base.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+            }
+        }
+
+        let row = build_static_sprite_row(&base);
+
+        assert_eq!(row.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
+        validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
+        for frame_index in 1..DEFAULT_FRAME_COUNT {
+            for x in 0..FRAME_W {
+                for y in 0..FRAME_H {
+                    assert_eq!(
+                        row.get_pixel(x, y),
+                        row.get_pixel(frame_index * FRAME_W + x, y),
+                        "idle frame {frame_index} differs at ({x}, {y})"
+                    );
+                }
+            }
         }
     }
 
@@ -1203,6 +1341,47 @@ mod tests {
         assert!(
             offsets.windows(2).all(|pair| pair[0] == pair[1]),
             "shared desk marker drifted between frames: {offsets:?}"
+        );
+    }
+
+    #[test]
+    fn row_normalization_removes_whole_frame_horizontal_drift() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut source = RgbaImage::from_pixel(
+            API_FRAME_W * DEFAULT_FRAME_COUNT,
+            API_FRAME_H,
+            Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+        );
+
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let start_x = frame_index * API_FRAME_W + 28 + frame_index * 14;
+            for x in start_x..start_x + 96 {
+                for y in 40..240 {
+                    source.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+        }
+
+        let normalized = normalize_horizontal_row(&png_bytes(&source), &key).unwrap();
+        let centers = (0..DEFAULT_FRAME_COUNT)
+            .map(|frame_index| {
+                let start_x = frame_index * FRAME_W;
+                let min_x = (start_x..start_x + FRAME_W)
+                    .find(|x| (0..FRAME_H).any(|y| normalized.get_pixel(*x, y)[3] > 0))
+                    .unwrap()
+                    - start_x;
+                let max_x = (start_x..start_x + FRAME_W)
+                    .rev()
+                    .find(|x| (0..FRAME_H).any(|y| normalized.get_pixel(*x, y)[3] > 0))
+                    .unwrap()
+                    - start_x;
+                (min_x + max_x) / 2
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            centers.windows(2).all(|pair| pair[0] == pair[1]),
+            "whole-frame horizontal drift remained after normalization: {centers:?}"
         );
     }
 
