@@ -4,7 +4,9 @@ import { createElement } from 'react';
 import SettingsPanel from '../../windows/Creator/SettingsPanel';
 import {
   DEFAULT_SETTINGS,
+  DEEPSEEK_MODELS,
   IMAGE_PROVIDERS,
+  KIMI_MODELS,
   SILICONFLOW_BASE_MODELS,
   SILICONFLOW_REFERENCE_MODELS,
   loadSettings,
@@ -72,6 +74,37 @@ describe('settings defaults and migration', () => {
     expect(settings.imageModel).toBe('Tongyi-MAI/Z-Image-Turbo');
   });
 
+  it('migrates retired Kimi Moonshot V1 models to a current vision model', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      visionProvider: 'kimi',
+      visionApiKey: 'kimi-key',
+      visionModel: 'moonshot-v1-32k-vision-preview',
+    }));
+
+    const settings = loadSettings();
+
+    expect(KIMI_MODELS.map(({ value }) => value)).toContain('kimi-k2.6');
+    expect(KIMI_MODELS.map(({ value }) => value)).not.toContain('moonshot-v1-32k-vision-preview');
+    expect(settings.visionProvider).toBe('kimi');
+    expect(settings.visionApiKey).toBe('kimi-key');
+    expect(settings.visionModel).toBe('kimi-k2.6');
+  });
+
+  it('migrates retired DeepSeek-VL2 settings to the current vision model', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      visionProvider: 'deepseek',
+      visionApiKey: 'deepseek-key',
+      visionModel: 'deepseek-vl2',
+    }));
+
+    const settings = loadSettings();
+
+    expect(DEEPSEEK_MODELS.map(({ value }) => value)).toEqual(['deepseek-v4-flash-vision-exp']);
+    expect(settings.visionProvider).toBe('deepseek');
+    expect(settings.visionApiKey).toBe('deepseek-key');
+    expect(settings.visionModel).toBe('deepseek-v4-flash-vision-exp');
+  });
+
   it('copies a legacy imageModel into the new base model field', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       imageProvider: 'siliconflow',
@@ -121,6 +154,10 @@ describe('settings defaults and migration', () => {
 });
 
 describe('image generation settings contract', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('exposes SiliconFlow, Wanxiang, and Local SD providers', () => {
     expect(IMAGE_PROVIDERS).toEqual(['siliconflow', 'wanxiang', 'localsd']);
     expect(SILICONFLOW_BASE_MODELS.map(({ value }) => value)).toContain('Tongyi-MAI/Z-Image-Turbo');

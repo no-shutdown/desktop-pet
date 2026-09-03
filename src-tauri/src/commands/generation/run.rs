@@ -207,6 +207,11 @@ fn reset_rows_in_manifest(
     app_data_dir: &Path,
     manifest: &mut GenerationRunManifest,
 ) -> Result<(), String> {
+    let probe_dir = run_dir(app_data_dir, &manifest.run_id)?.join("probes");
+    if probe_dir.exists() {
+        fs::remove_dir_all(&probe_dir)
+            .map_err(|error| format!("remove stale animation probes: {error}"))?;
+    }
     for state in state_definitions() {
         reset_state_artifact(app_data_dir, &manifest.run_id, state.key)?;
         manifest.states.insert(
@@ -498,6 +503,8 @@ mod tests {
         fs::write(run.join("base.png"), b"old base").unwrap();
         fs::write(run.join("rows/idle.png"), b"old idle").unwrap();
         fs::write(run.join("rows/sleeping.png"), b"old sleeping").unwrap();
+        fs::create_dir_all(run.join("probes/sleeping")).unwrap();
+        fs::write(run.join("probes/sleeping/frame-0.png"), b"old probe").unwrap();
         let pets = temp.path().join("pets").join("existing-pet");
         fs::create_dir_all(&pets).unwrap();
         fs::write(pets.join("idle.png"), b"pet data").unwrap();
@@ -512,6 +519,7 @@ mod tests {
             assert!(!run.join(format!("rows/{state}.png")).exists());
         }
         assert!(run.join("base.png").exists());
+        assert!(!run.join("probes").exists());
         assert_eq!(fs::read(pets.join("idle.png")).unwrap(), b"pet data");
     }
 

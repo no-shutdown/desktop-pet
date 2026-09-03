@@ -5,6 +5,7 @@ pub const FRAME_H: u32 = 128;
 pub const API_FRAME_W: u32 = 256;
 pub const API_FRAME_H: u32 = 256;
 pub const DEFAULT_FRAME_COUNT: u32 = 8;
+pub const ANIMATION_PROBE_FRAME_COUNT: u32 = 4;
 pub const CANONICAL_FACING: &str =
     "forward, straight-on, exactly the same camera angle and left-right orientation as the canonical base image";
 
@@ -73,7 +74,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 200,
         frame_variation: FrameVariation::Animated,
         facing: CANONICAL_FACING,
-        action: "the character is SEATED on a chair or stool behind a small desk, slumped forward and ASLEEP with the head and folded arms resting flat on the desktop as a pillow; distributed evenly across the 8 frames, only the shoulders, back, and head-on-arms rise by about 1-2% of body height on inhale (frames 1-4) and fall back on exhale (frames 5-8); the eyes stay closed; the arms, hands, torso, hips, and legs are motionless aside from that tiny breathing rise-and-fall; optionally add a single small drifting Zzz-like head sway or a slow one-frame twitch of one fingertip; each frame differs from its neighbor by only a tiny continuous increment of the breath cycle; frame 8 flows seamlessly back into frame 1",
+        action: "the character is SEATED on a chair or stool behind a small desk, slumped forward and ASLEEP with the head and folded arms resting flat on the desktop as a pillow; distributed evenly across the 8 frames, only the shoulders, back, and head-on-arms rise and fall by a clearly visible but gentle 3-5% of body height through one complete inhale-and-exhale cycle; the eyes stay closed; the arms, hands, torso, hips, and legs are motionless aside from that breathing rise-and-fall; do not add text or effects; each frame differs from its neighbor by a small, visible continuous increment of the breath cycle; frame 8 flows seamlessly back into frame 1",
         requirements: "The character MUST be sitting behind a desk with head and arms resting on the desktop, eyes closed, asleep, in every single frame — no standing, sitting upright, working, or greeting gesture, and do not open the eyes. Keep the desk and chair identical across all 8 frames. No Zzz text symbols, sleep bubbles, dream clouds, papers, laptops, keyboards, or floating props. Camera is fixed; the character and furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
     StateDefinition {
@@ -82,7 +83,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 110,
         frame_variation: FrameVariation::Animated,
         facing: CANONICAL_FACING,
-        action: "a cute, affectionate 8-frame cycle with both hands held close to the face or chest; the head and upper body sway gently left and right in tiny continuous increments, with one brief shy blink on a single frame; keep the character planted in place and finish in a seamless loop",
+        action: "a cute, affectionate 8-frame cycle with both hands held close to the face or chest; the upper body sways gently left and right by a small but clearly visible amount in continuous increments, with one brief shy blink on a single frame; keep the character planted in place and finish in a seamless loop",
         requirements: "Both hands stay close to the face or chest in every frame. The motion is small, continuous, and centered: no greeting gesture, large arm lift, jumping, translation, head turn, or change of facing direction. No hearts, text, symbols, motion lines, sparkles, particles, glow, speech bubbles, or other detached effects. Preserve the same character identity, scale, baseline, camera, and background across all 8 frames.",
     },
     StateDefinition {
@@ -91,7 +92,7 @@ const STATE_DEFINITIONS: [StateDefinition; 4] = [
         delay_ms: 120,
         frame_variation: FrameVariation::Animated,
         facing: CANONICAL_FACING,
-        action: "the character is SEATED behind a compact desk in every frame, with one complete OPEN LAPTOP COMPUTER centered on the desk; it is visibly open at about a right angle, with a clearly visible hinged screen panel: a large upright rectangular display panel behind the keyboard deck, a visible hinge joining the two halves, a clearly readable screen bezel, and one blank softly lit screen surface facing the viewer; the screen must be unobstructed and unmistakable, never hidden behind the character or hands; both hands type on the laptop keyboard in every frame; the desk/table is fixed lower-third at elbow height and has the same desk geometry in all frames; distributed evenly across the 8 frames, only localized arm, wrist, hand, and finger typing motion may change between frames while the elbows, shoulders, torso, head, and lower body stay essentially still; there is no desk/chair/laptop drift or replacement; the head angle, body orientation, gaze direction, and camera relationship are locked and unchanged; each frame differs from its neighbor by only a small continuous increment; frame 8 flows seamlessly back into frame 1",
+        action: "the character is SEATED behind a compact desk in every frame, with one complete OPEN LAPTOP COMPUTER centered on the desk; it is visibly open at about a right angle, with a clearly visible hinged screen panel: a large upright rectangular display panel behind the keyboard deck, a visible hinge joining the two halves, a clearly readable screen bezel, and one blank softly lit screen surface facing the viewer; the screen must be unobstructed and unmistakable, never hidden behind the character or hands; both hands type on the laptop keyboard in every frame; the desk/table is fixed lower-third at elbow height and has the same desk geometry in all frames; distributed evenly across the 8 frames, visible localized arm, wrist, hand, and finger typing motion advances in clear continuous increments while the elbows, shoulders, torso, head, and lower body stay essentially still; there is no desk/chair/laptop drift or replacement; the head angle, body orientation, gaze direction, and camera relationship are locked and unchanged; each frame differs from its neighbor by a small but clearly visible continuous increment; frame 8 flows seamlessly back into frame 1",
         requirements: "The character MUST be SEATED behind a desk with one complete OPEN LAPTOP COMPUTER in every single frame, awake with eyes OPEN and head UP. The laptop MUST show both connected halves: an upright, clearly visible rectangular display with bezel and blank lit screen facing the viewer, plus the lower keyboard deck resting flat on the tabletop; its visible hinge proves the laptop is open, and neither the face nor hands may cover the screen. The desk/table is fixed lower-third at elbow height with the same desk geometry in all frames. Explicitly forbid a standalone keyboard, keyboard-only output, tablet, closed laptop, screenless laptop, laptop without a display, laptop on the character's lap (lap-held), lap-held laptop, held device, or independent monitor substitution. Only localized arm, wrist, hand, and finger motion is allowed; head angle, body orientation, gaze direction, and camera relationship are locked and unchanged. No desk/chair/laptop drift or replacement, no UI, screen content, code, papers, symbols, floating props, or detached effects. Camera is fixed; the character and the furniture stay absolutely centered and do not translate horizontally or vertically between frames.",
     },
 ];
@@ -200,6 +201,36 @@ pub struct StateRowResult {
     pub frame_w: u32,
     pub frame_h: u32,
     pub frame_count: u32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatePromptPreviewResult {
+    pub run_id: String,
+    pub state: String,
+    pub frame_count: u32,
+    pub prompts: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationProbeValidation {
+    pub passed: bool,
+    pub max_center_drift: u32,
+    pub max_baseline_drift: u32,
+    pub min_changed_pixels: u32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StateProbeResult {
+    pub run_id: String,
+    pub state: String,
+    pub data_url: String,
+    pub frame_w: u32,
+    pub frame_h: u32,
+    pub frame_count: u32,
+    pub validation: AnimationProbeValidation,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

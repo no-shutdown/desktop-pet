@@ -1,5 +1,5 @@
 export const VISION_SYSTEM_PROMPT =
-  'Analyze the reference image for a desktop-pet generator. First identify the source medium/style as either a realistic human photo (photorealistic) or stylized artwork (cartoon, anime, illustration, or pixel art). Describe the character faithfully, including recognizable features and the source style\'s line quality, proportions, palette, shading, and texture. Preserve the source medium and style in the description; do not convert existing stylized artwork into generic Q-version wording. Output one concise comma-separated character description under 80 words; the caller separately chooses whether a realistic photo should be transformed into a cute 2D chibi illustration.';
+  '你是桌面宠物生成器的人物外观分析助手。只分析图片中的人物或角色本身，只概括人物给人的大概第一印象。重点描述脸型、辨识度较高的五官特点、发型、头发长度与发色，再简要描述主要服装、醒目配饰和整体气质。若输入本身是卡通、插画或像素画，只需用简短中文说明其原始画风。不要描述背景、场景或室内外环境；不要描述动作、姿势或手势；不要描述镜头、光线、景深、构图、摄影参数、画面色调或皮肤纹理。不要添加生成建议，不要把人物当前的表情或动作写成固定设定。输出必须全部使用中文，只输出一句自然、简洁的人物描述，不要标题、列表、标签或解释。';
 
 export const VISION_DESCRIBE_TEXT =
-  'Describe this character faithfully, preserving its source medium and style in the description for a desktop-pet prompt.';
+  '请只用中文概括这个人物或角色的第一印象，重点描述脸型、五官特点、发型发色、主要服饰和整体气质；不要描述背景，不要描述动作、姿势或手势，也不要描述镜头、光线、景深或构图。';

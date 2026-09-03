@@ -24,6 +24,22 @@ interface StateRowResult {
   frameCount: number;
 }
 
+interface StatePromptPreviewResult {
+  runId: string;
+  state: string;
+  frameCount: number;
+  prompts: string[];
+}
+
+interface StateProbeResult extends StateRowResult {
+  validation: {
+    passed: boolean;
+    maxCenterDrift: number;
+    maxBaselineDrift: number;
+    minChangedPixels: number;
+  };
+}
+
 interface AssembleRunPreviewResult {
   runId: string;
   dataUrl: string;
@@ -64,6 +80,8 @@ const STATE_DELAY_MS: Record<PetState, number> = PET_STATE_CATALOG.reduce(
   },
   {} as Record<PetState, number>,
 );
+
+const ANIMATED_STATES = PET_STATES.filter((state) => state !== 'idle');
 
 function supportedProvider(provider: ImageProvider): GenerationProvider {
   if (provider === 'localsd') return 'localsd';
@@ -120,11 +138,21 @@ export default function StateGenerationStep({
   const [settings, setSettings] = useState(loadSettings);
   const [completedRows, setCompletedRows] = useState<Partial<Record<PetState, StateRowResult>>>({});
   const [failedStates, setFailedStates] = useState<Partial<Record<PetState, true>>>({});
+  const [selectedProbeState, setSelectedProbeState] = useState<PetState>(
+    ANIMATED_STATES[0] ?? 'sleeping',
+  );
+  const [promptPreview, setPromptPreview] = useState<StatePromptPreviewResult | null>(null);
+  const [probeRows, setProbeRows] = useState<Partial<Record<PetState, StateProbeResult>>>({});
+  const [approvedProbeStates, setApprovedProbeStates] = useState<Partial<Record<PetState, true>>>({});
   const [activeState, setActiveState] = useState<PetState | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState({ state: null as PetState | null, current: 0, total: 4 });
   const [assembledPreview, setAssembledPreview] = useState<AssembleRunPreviewResult | null>(null);
   const [viewerState, setViewerState] = useState<PetState | 'combined' | null>(null);
+  const busy = status === 'generating' || status === 'assembling';
+  const hasApprovedProbe = ANIMATED_STATES.some((state) => (
+    Boolean(probeRows[state] && approvedProbeStates[state])
+  ));
 
   busyCallbackRef.current = onBusyChange;
 
@@ -189,11 +217,14 @@ export default function StateGenerationStep({
       saveSettings(next);
       return next;
     });
+    setPromptPreview(null);
+    setProbeRows({});
+    setApprovedProbeStates({});
   }
 
-  function generationArgs(state: PetState) {
+  function generationArgs(state: PetState, reuseProbe = false) {
     const providerChoice = settings.rowImageProvider ?? settings.imageProvider;
-    return {
+    const args = {
       runId,
       state,
       imageProvider: supportedProvider(providerChoice),
@@ -202,6 +233,7 @@ export default function StateGenerationStep({
       localSdUrl: settings.localSdUrl || null,
       denoisingStrength: settings.localSdDenoisingStrength,
     };
+    return reuseProbe ? { ...args, reuseProbe: true } : args;
   }
 
   async function reassemblePreview() {
@@ -210,8 +242,78 @@ export default function StateGenerationStep({
     setAssembledPreview(assembled);
   }
 
+  async function handlePreviewPrompts() {
+    if (busy) return;
+    setErrorMsg(null);
+    try {
+      const result = await invoke<StatePromptPreviewResult>('preview_state_prompts', {
+        runId,
+        state: selectedProbeState,
+      });
+      if (!mountedRef.current) return;
+      setPromptPreview(result);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setErrorMsg(messageFromError(error));
+    }
+  }
+
+  async function handleProbe() {
+    if (busy) return;
+
+    setProbeRows((previous) => {
+      const next = { ...previous };
+      delete next[selectedProbeState];
+      return next;
+    });
+    setApprovedProbeStates((previous) => {
+      const next = { ...previous };
+      delete next[selectedProbeState];
+      return next;
+    });
+    reportBusy(true);
+    setStatus('generating');
+    setErrorMsg(null);
+    setActiveState(selectedProbeState);
+    setProgress({ state: selectedProbeState, current: 0, total: 4 });
+
+    try {
+      const result = await invoke<StateProbeResult>(
+        'generate_state_probe',
+        generationArgs(selectedProbeState),
+      );
+      if (!mountedRef.current) return;
+      setProbeRows((previous) => ({ ...previous, [selectedProbeState]: result }));
+      setApprovedProbeStates((previous) => {
+        const next = { ...previous };
+        delete next[selectedProbeState];
+        return next;
+      });
+      setActiveState(null);
+      setStatus('ready');
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setActiveState(null);
+      setErrorMsg(messageFromError(error));
+      setStatus('error');
+    } finally {
+      reportBusy(false);
+    }
+  }
+
+  function handleApproveProbe() {
+    const probe = probeRows[selectedProbeState];
+    if (!probe?.validation.passed) return;
+    setApprovedProbeStates((previous) => ({
+      ...previous,
+      [selectedProbeState]: true,
+    }));
+  }
+
   async function handleGenerate() {
     if (status === 'generating' || status === 'assembling') return;
+
+    if (!hasApprovedProbe) return;
 
     const pendingStates = PET_STATES.filter((state) => !completedRows[state]);
     if (pendingStates.length === 0) return;
@@ -227,7 +329,10 @@ export default function StateGenerationStep({
       for (const state of pendingStates) {
         currentState = state;
         setActiveState(state);
-        const result = await invoke<StateRowResult>('generate_state_row', generationArgs(state));
+        const result = await invoke<StateRowResult>(
+          'generate_state_row',
+          generationArgs(state, Boolean(probeRows[state] && approvedProbeStates[state])),
+        );
         if (!mountedRef.current) return;
         setCompletedRows((previous) => ({ ...previous, [state]: result }));
         setProgress({ state, current: PET_STATES.indexOf(state) + 1, total: 4 });
@@ -266,7 +371,10 @@ export default function StateGenerationStep({
     setProgress({ state, current: PET_STATES.indexOf(state) + 1, total: 4 });
 
     try {
-      const result = await invoke<StateRowResult>('generate_state_row', generationArgs(state));
+      const result = await invoke<StateRowResult>(
+        'generate_state_row',
+        generationArgs(state, Boolean(probeRows[state] && approvedProbeStates[state])),
+      );
       if (!mountedRef.current) return;
       setCompletedRows((previous) => ({ ...previous, [state]: result }));
       setActiveState(null);
@@ -297,9 +405,9 @@ export default function StateGenerationStep({
   }
 
   const provider = supportedProvider(settings.rowImageProvider ?? settings.imageProvider);
-  const busy = status === 'generating' || status === 'assembling';
   const completedCount = PET_STATES.filter((state) => completedRows[state]).length;
   const allComplete = completedCount === 4;
+  const selectedProbe = probeRows[selectedProbeState];
   const canConfirm = Boolean(assembledPreview) && allComplete && !busy;
 
   const viewerRow = useMemo(() => {
@@ -402,12 +510,116 @@ export default function StateGenerationStep({
         />
       )}
 
+      <div style={{ background: '#fffaf0', border: '1px solid #f6ad55', borderRadius: 10, padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <p style={{ margin: 0, fontSize: 13, color: '#9c4221', fontWeight: 600 }}>
+          先检测一个动作，再继续完整生成
+        </p>
+        <p style={{ margin: 0, fontSize: 12, color: '#975a16', lineHeight: 1.5 }}>
+          预览提示词不会调用 API；动作检测只连续生成 4 帧，用来确认提示词、动作连贯性和画面是否漂移。
+        </p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#744210' }}>
+          检测动作
+          <select
+            aria-label="检测动作"
+            value={selectedProbeState}
+            onChange={(event) => {
+              setSelectedProbeState(event.target.value as PetState);
+              setPromptPreview(null);
+              setErrorMsg(null);
+            }}
+            disabled={busy}
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #f6ad55', background: '#fff', cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            {ANIMATED_STATES.map((state) => (
+              <option key={state} value={state}>{PET_STATE_LABELS[state]}</option>
+            ))}
+          </select>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            aria-label="查看检测动作提示词"
+            onClick={handlePreviewPrompts}
+            disabled={busy}
+            style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #f6ad55', background: '#fff', color: '#975a16', cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            查看提示词（0 次 API）
+          </button>
+          <button
+            type="button"
+            aria-label="生成 4 帧检测"
+            onClick={handleProbe}
+            disabled={busy}
+            style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: busy ? '#fbd38d' : '#ed8936', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            生成 4 帧检测
+          </button>
+        </div>
+
+        {promptPreview?.state === selectedProbeState && (
+          <details open style={{ background: '#fff', borderRadius: 6, padding: '8px 10px' }}>
+            <summary style={{ cursor: 'pointer', color: '#744210', fontSize: 12 }}>
+              {promptPreview.frameCount} 帧最终提示词
+            </summary>
+            <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', margin: '8px 0 0', fontSize: 11, lineHeight: 1.5, color: '#4a5568' }}>
+              {promptPreview.prompts.map((prompt, index) => `第 ${index + 1} 帧\n${prompt}`).join('\n\n')}
+            </pre>
+          </details>
+        )}
+
+        {selectedProbe && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', background: '#fff', borderRadius: 8, padding: 10 }}>
+            <span style={{ fontSize: 12, color: '#276749', fontWeight: 600 }}>
+              {selectedProbe.validation.passed ? '连续性预检通过' : '连续性预检未通过'}
+            </span>
+            <SpriteAnimator
+              sheetSrc={selectedProbe.dataUrl}
+              meta={{
+                cols: selectedProbe.frameCount,
+                rows: 1,
+                frameCount: selectedProbe.frameCount,
+                frameW: selectedProbe.frameW,
+                frameH: selectedProbe.frameH,
+                delayMs: STATE_DELAY_MS[selectedProbeState],
+              }}
+              displayW={selectedProbe.frameW * 2}
+              displayH={selectedProbe.frameH * 2}
+            />
+            <img
+              alt={`${selectedProbeState} 4-frame probe`}
+              src={selectedProbe.dataUrl}
+              style={{ maxWidth: '80vw', imageRendering: 'pixelated', border: '1px solid #e2e8f0', borderRadius: 6, background: '#f7fafc' }}
+            />
+            <span style={{ fontSize: 11, color: '#718096' }}>
+              中心最大漂移 {selectedProbe.validation.maxCenterDrift}px；底线最大漂移 {selectedProbe.validation.maxBaselineDrift}px；相邻帧最少变化 {selectedProbe.validation.minChangedPixels} 像素
+            </span>
+            <button
+              type="button"
+              aria-label="确认检测通过，继续生成"
+              onClick={handleApproveProbe}
+              disabled={busy || !selectedProbe.validation.passed || Boolean(approvedProbeStates[selectedProbeState])}
+              style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: approvedProbeStates[selectedProbeState] ? '#68d391' : '#38a169', color: '#fff', cursor: busy || Boolean(approvedProbeStates[selectedProbeState]) ? 'default' : 'pointer' }}
+            >
+              {approvedProbeStates[selectedProbeState] ? '检测已确认' : '确认检测通过，继续生成'}
+            </button>
+          </div>
+        )}
+
+        {hasApprovedProbe && (
+          <p style={{ margin: 0, fontSize: 12, color: '#276749' }}>
+            已确认一个动作的提示词和连续性；现在可以手动启动完整状态生成。
+          </p>
+        )}
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
         {PET_STATES.map((state) => {
           const row = completedRows[state];
           const failed = Boolean(failedStates[state]);
           const isActive = activeState === state;
-          const canRegenerate = Boolean(row || failed) && !busy;
+          const canRegenerate = Boolean(row || failed)
+            && !busy
+            && (state === 'idle' || hasApprovedProbe);
           const canOpenViewer = Boolean(row) && !busy;
           return (
             <div key={state} style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
@@ -506,8 +718,8 @@ export default function StateGenerationStep({
         {!allComplete && (
           <button
             onClick={handleGenerate}
-            disabled={busy}
-            style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: busy ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer' }}
+            disabled={busy || !hasApprovedProbe}
+            style={{ padding: '8px 24px', borderRadius: 6, border: 'none', background: busy || !hasApprovedProbe ? '#e2e8f0' : '#4f8ef7', color: '#fff', cursor: busy || !hasApprovedProbe ? 'not-allowed' : 'pointer' }}
           >
             {completedCount === 0 ? '生成所有状态' : `生成剩余 ${4 - completedCount} 个`}
           </button>

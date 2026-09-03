@@ -16,8 +16,8 @@ interface SettingsPanelProps {
 const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] = [
   { value: 'skip',      label: '跳过（手动输入）',    desc: '自己描述角色特征' },
   { value: 'anthropic', label: 'Anthropic (Claude)', desc: '效果最佳，支持多个 Claude 模型' },
-  { value: 'deepseek',  label: 'DeepSeek',           desc: 'deepseek-vl2 视觉模型' },
-  { value: 'kimi',      label: 'Kimi（月之暗面）',    desc: 'moonshot 视觉模型' },
+  { value: 'deepseek',  label: 'DeepSeek',           desc: 'DeepSeek V4 Flash Vision 视觉模型' },
+  { value: 'kimi',      label: 'Kimi（月之暗面）',    desc: 'Kimi K2.6 / K3 视觉模型' },
 ];
 
 const IMAGE_OPTIONS: { value: Exclude<ImageProvider, 'pollinations'>; label: string; desc: string }[] = [

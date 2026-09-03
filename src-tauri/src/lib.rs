@@ -44,6 +44,8 @@ pub fn run() {
             commands::settings::save_window_position,
             commands::settings::load_window_position,
             commands::generation::generate_base_preview,
+            commands::generation::preview_state_prompts,
+            commands::generation::generate_state_probe,
             commands::generation::generate_state_row,
             commands::generation::assemble_run_preview,
             commands::generation::discard_generation_run,

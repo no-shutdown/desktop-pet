@@ -20,8 +20,9 @@ export async function analyzePhotoWithSettings(
       return analyzeOpenAICompat(
         imageDataUrl,
         settings.visionApiKey,
-        'https://api.deepseek.com/v1',
+        'https://api.deepseek.com',
         settings.visionModel,
+        { thinking: { type: 'disabled' } },
       );
     case 'kimi':
       return analyzeOpenAICompat(
@@ -29,6 +30,7 @@ export async function analyzePhotoWithSettings(
         settings.visionApiKey,
         'https://api.moonshot.cn/v1',
         settings.visionModel,
+        kimiVisionOptions(settings.visionModel),
       );
     default:
       throw new Error(`Unknown vision provider: ${settings.visionProvider}`);
@@ -50,7 +52,9 @@ async function analyzeWithAnthropic(imageDataUrl: string, apiKey: string, model:
       messages: buildAnalysisMessages(imageDataUrl),
     }),
   });
-  if (!response.ok) throw new Error(`Anthropic API error: ${response.status}`);
+  if (!response.ok) {
+    throw new Error(`Anthropic API error: ${response.status}${await apiErrorDetail(response)}`);
+  }
   const data = await response.json();
   return data.content[0].text as string;
 }
@@ -60,6 +64,7 @@ async function analyzeOpenAICompat(
   apiKey: string,
   baseUrl: string,
   model: string,
+  options: OpenAICompatOptions = {},
 ): Promise<string> {
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -70,6 +75,7 @@ async function analyzeOpenAICompat(
     body: JSON.stringify({
       model,
       max_tokens: 256,
+      ...options,
       messages: [
         {
           role: 'user',
@@ -81,7 +87,63 @@ async function analyzeOpenAICompat(
       ],
     }),
   });
-  if (!response.ok) throw new Error(`${model} API error: ${response.status}`);
-  const data = await response.json();
-  return data.choices[0].message.content as string;
+  if (!response.ok) {
+    throw new Error(`${model} API error: ${response.status}${await apiErrorDetail(response)}`);
+  }
+  const data = await response.json() as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+  return extractAssistantText(data, model);
+}
+
+type OpenAICompatOptions = {
+  thinking?: { type: 'enabled' | 'disabled' };
+  reasoning_effort?: 'low' | 'high' | 'max';
+  max_tokens?: number;
+};
+
+function kimiVisionOptions(model: string): OpenAICompatOptions {
+  if (model === 'kimi-k3') {
+    return { max_tokens: 512, reasoning_effort: 'low' };
+  }
+  return { thinking: { type: 'disabled' } };
+}
+
+function extractAssistantText(
+  data: { choices?: Array<{ message?: { content?: unknown } }> },
+  model: string,
+): string {
+  const content = data.choices?.[0]?.message?.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+        .map((part) => {
+          if (typeof part !== 'object' || part === null || !('text' in part)) return '';
+          return typeof part.text === 'string' ? part.text : '';
+        })
+        .join('')
+      : '';
+
+  if (!text.trim()) {
+    throw new Error(`${model} API returned an empty description`);
+  }
+  return text.trim();
+}
+
+async function apiErrorDetail(response: Response): Promise<string> {
+  try {
+    const data = await response.json() as {
+      error?: { message?: unknown };
+      message?: unknown;
+    };
+    const message = typeof data.error?.message === 'string'
+      ? data.error.message
+      : typeof data.message === 'string'
+        ? data.message
+        : '';
+    return message.trim() ? `: ${message.trim()}` : '';
+  } catch {
+    return '';
+  }
 }

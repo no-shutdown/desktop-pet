@@ -244,6 +244,32 @@ pub fn wanxiang_row_body(model: &str, prompt: &str, base_image_data_url: &str) -
     }
 }
 
+/// Builds a Wan 2.7 image-edit request for one animation frame. The regular
+/// row request remains unchanged for legacy callers; animation edits need an
+/// explicit 1K output and, when supported, a bbox that limits redraws to the
+/// requested motion region.
+pub fn wanxiang_frame_body_with_bbox(
+    model: &str,
+    prompt: &str,
+    base_image_data_url: &str,
+    bbox: Option<[u32; 4]>,
+) -> Value {
+    let mut body = wanxiang_row_body(model, prompt, base_image_data_url);
+    if !is_new_wan_model(model) {
+        return body;
+    }
+
+    body["parameters"]["size"] = serde_json::json!("1K");
+    body["parameters"]["watermark"] = serde_json::json!(false);
+    if matches!(model.trim(), "wan2.7-image" | "wan2.7-image-pro") {
+        if let Some(bbox) = bbox {
+            body["parameters"]["bbox_list"] =
+                serde_json::json!([[[bbox[0], bbox[1], bbox[2], bbox[3]]]]);
+        }
+    }
+    body
+}
+
 fn is_valid_image_subtype(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|character| {
@@ -1062,10 +1088,13 @@ pub async fn generate_base(
     .await
 }
 
-pub async fn generate_row(
+async fn generate_reference_image(
     config: &ProviderConfig,
     prompt: &str,
     base_data_url: &str,
+    width: u32,
+    height: u32,
+    bbox: Option<[u32; 4]>,
 ) -> Result<Vec<u8>, String> {
     validate_provider(config)?;
     let base_data_url = validate_canonical_data_url(base_data_url)?;
@@ -1077,19 +1106,24 @@ pub async fn generate_row(
                     &config.reference_model,
                     prompt,
                     &base_data_url,
-                    2048,
-                    256,
+                    width,
+                    height,
                 );
                 generate_siliconflow(config, body).await
             }
             "wanxiang" => {
                 let endpoint = wanxiang_endpoint_for_row(&config.reference_model);
-                let body = wanxiang_row_body(&config.reference_model, prompt, &base_data_url);
+                let body = wanxiang_frame_body_with_bbox(
+                    &config.reference_model,
+                    prompt,
+                    &base_data_url,
+                    bbox,
+                );
                 generate_wanxiang(config, endpoint, body).await
             }
             "localsd" | "local_sd" => {
                 let body =
-                    local_sd_row_body(prompt, &base_data_url, 2048, 256, config.denoising_strength);
+                    local_sd_row_body(prompt, &base_data_url, width, height, config.denoising_strength);
                 generate_local_sd(local_sd_endpoint(&config.local_sd_url, "img2img"), body).await
             }
             provider => Err(bounded_sanitized_error(
@@ -1100,6 +1134,23 @@ pub async fn generate_row(
         }
     })
     .await
+}
+
+pub async fn generate_row(
+    config: &ProviderConfig,
+    prompt: &str,
+    base_data_url: &str,
+) -> Result<Vec<u8>, String> {
+    generate_reference_image(config, prompt, base_data_url, 2048, 256, None).await
+}
+
+pub async fn generate_frame(
+    config: &ProviderConfig,
+    prompt: &str,
+    base_data_url: &str,
+    bbox: Option<[u32; 4]>,
+) -> Result<Vec<u8>, String> {
+    generate_reference_image(config, prompt, base_data_url, 256, 256, bbox).await
 }
 
 #[cfg(test)]
@@ -1375,6 +1426,23 @@ mod tests {
                 },
                 "parameters": { "n": 1 },
             })
+        );
+    }
+
+    #[test]
+    fn wan27_row_body_uses_precise_edit_box_and_explicit_1k_size() {
+        let body = wanxiang_frame_body_with_bbox(
+            "wan2.7-image-pro",
+            "row prompt",
+            BASE_IMAGE,
+            Some([64, 80, 448, 368]),
+        );
+
+        assert_eq!(body["parameters"]["size"], "1K");
+        assert_eq!(body["parameters"]["watermark"], false);
+        assert_eq!(
+            body["parameters"]["bbox_list"],
+            json!([[[64, 80, 448, 368]]])
         );
     }
 

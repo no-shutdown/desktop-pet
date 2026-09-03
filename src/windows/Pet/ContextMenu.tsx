@@ -1,56 +1,38 @@
-import type { CSSProperties } from 'react';
+import { Menu, type MenuOptions } from '@tauri-apps/api/menu';
+import type { PetState } from '../../types/pet';
 
-interface ContextMenuProps {
-  x: number;
-  y: number;
-  visible: boolean;
-  onClose: () => void;
+interface PetContextMenuActions {
+  onSwitchAction: (state: PetState) => void;
   onSwitchPet: () => void;
   onOpenCreator: () => void;
   onExit: () => void;
 }
 
-const itemStyle: CSSProperties = {
-  padding: '8px 16px',
-  cursor: 'pointer',
-  fontSize: 14,
-  userSelect: 'none',
-  whiteSpace: 'nowrap',
-};
+export function buildPetContextMenuItems(
+  actions: PetContextMenuActions,
+): NonNullable<MenuOptions['items']> {
+  return [
+    {
+      id: 'switch-action',
+      text: '切换动作',
+      items: [
+        { id: 'action-idle', text: '待机', action: () => actions.onSwitchAction('idle') },
+        { id: 'action-sleeping', text: '睡觉', action: () => actions.onSwitchAction('sleeping') },
+        { id: 'action-acting-cute', text: '撒娇', action: () => actions.onSwitchAction('acting_cute') },
+        { id: 'action-working', text: '工作', action: () => actions.onSwitchAction('working') },
+      ],
+    },
+    { item: 'Separator' },
+    { id: 'switch-pet', text: '切换宠物', action: actions.onSwitchPet },
+    { id: 'open-creator', text: '打开创建器', action: actions.onOpenCreator },
+    { item: 'Separator' },
+    { id: 'exit', text: '退出', action: actions.onExit },
+  ];
+}
 
-export default function ContextMenu({ x, y, visible, onClose, onSwitchPet, onOpenCreator, onExit }: ContextMenuProps) {
-  if (!visible) return null;
-
-  return (
-    <>
-      <div
-        data-testid="backdrop"
-        style={{ position: 'fixed', inset: 0, zIndex: 999 }}
-        onClick={onClose}
-      />
-      <div style={{
-        position: 'fixed',
-        left: x,
-        top: y,
-        background: '#fff',
-        border: '1px solid #e2e8f0',
-        borderRadius: 6,
-        boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-        zIndex: 1000,
-        overflow: 'hidden',
-        minWidth: 160,
-      }}>
-        <div style={{ ...itemStyle, color: '#2d3748' }} onClick={onSwitchPet}>
-          切换宠物
-        </div>
-        <div style={{ ...itemStyle, color: '#2d3748' }} onClick={onOpenCreator}>
-          打开创建器
-        </div>
-        <div style={{ borderTop: '1px solid #e2e8f0' }} />
-        <div style={{ ...itemStyle, color: '#e53e3e' }} onClick={onExit}>
-          退出
-        </div>
-      </div>
-    </>
-  );
+export function createPetContextMenu(actions: PetContextMenuActions): Promise<Menu> {
+  return Menu.new({
+    id: 'pet-context-menu',
+    items: buildPetContextMenuItems(actions),
+  });
 }

@@ -1,5 +1,6 @@
 use super::types::{
-    state_definitions, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    state_definitions, AnimationProbeValidation, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT,
+    FRAME_H, FRAME_W,
 };
 use base64::Engine as _;
 use image::{imageops::FilterType, DynamicImage, Rgba, RgbaImage};
@@ -744,41 +745,40 @@ fn align_frames_to_shared_anchor(row: &mut RgbaImage, frame_count: u32) {
 }
 
 fn frame_ground_anchor(frame: &RgbaImage) -> Option<(u32, u32)> {
-    const SUPPORT_BAND_HEIGHT: u32 = 6;
-    let lower_band_start = frame.height().saturating_sub(SUPPORT_BAND_HEIGHT);
+    const MIN_ANCHOR_ALPHA: u8 = 32;
+    const MIN_SUPPORT_PIXELS: usize = 4;
+
+    // A chroma-removal edge can leave a few barely visible anti-aliased pixels
+    // below the actual feet or furniture. Looking only at the lowest alpha>0
+    // pixel makes that fringe look like a 10px+ scene translation. Require a
+    // small horizontal support run of solid-enough pixels instead, so the
+    // anchor represents a real support surface rather than one edge artifact.
+    let baseline = (0..frame.height()).rev().find(|&y| {
+        let support_pixels = (0..frame.width())
+            .filter(|&x| frame.get_pixel(x, y)[3] >= MIN_ANCHOR_ALPHA)
+            .count();
+        support_pixels >= MIN_SUPPORT_PIXELS
+    })?;
+
+    let support_band_start = baseline.saturating_sub(5);
+    let support_band_end = baseline
+        .saturating_add(5)
+        .min(frame.height().saturating_sub(1));
     let mut min_x = frame.width();
     let mut max_x = 0;
     let mut found = false;
-    let mut baseline = None;
-
-    for y in lower_band_start..frame.height() {
+    for y in support_band_start..=support_band_end {
         for x in 0..frame.width() {
             if frame.get_pixel(x, y)[3] == 0 {
                 continue;
             }
-            found = true;
             min_x = min_x.min(x);
             max_x = max_x.max(x);
-            baseline = Some(y);
+            found = true;
         }
     }
 
-    if found {
-        return Some(((min_x + max_x) / 2, baseline.unwrap()));
-    }
-
-    // Very small or unusually high content may not reach the lower quarter;
-    // retain the previous conservative fallback in that case.
-    for y in (0..frame.height()).rev() {
-        let visible_x = (0..frame.width())
-            .filter(|&x| frame.get_pixel(x, y)[3] > 0)
-            .collect::<Vec<_>>();
-        if let (Some(min_x), Some(max_x)) = (visible_x.first(), visible_x.last()) {
-            return Some(((*min_x + *max_x) / 2, y));
-        }
-    }
-
-    None
+    found.then_some(((min_x + max_x) / 2, baseline))
 }
 
 fn find_visible_bounds(image: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
@@ -885,6 +885,329 @@ pub fn build_static_sprite_row(base: &RgbaImage) -> RgbaImage {
     row
 }
 
+/// Converts a transparent normalized frame back to an opaque chroma canvas
+/// before sending it to an image-edit provider. Providers otherwise composite
+/// transparent pixels against black or an arbitrary colour, which causes the
+/// background and scene lighting to jump between sequential edits.
+pub fn flatten_on_chroma_background(image: &RgbaImage, key: &ChromaKey) -> RgbaImage {
+    let mut flattened = RgbaImage::from_pixel(
+        image.width(),
+        image.height(),
+        Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]),
+    );
+
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let alpha = u32::from(pixel[3]);
+        if alpha == 0 {
+            continue;
+        }
+        let inverse_alpha = 255 - alpha;
+        let blend = |foreground: u8, background: u8| {
+            ((u32::from(foreground) * alpha
+                + u32::from(background) * inverse_alpha
+                + 127)
+                / 255) as u8
+        };
+        flattened.put_pixel(
+            x,
+            y,
+            Rgba([
+                blend(pixel[0], key.rgb[0]),
+                blend(pixel[1], key.rgb[1]),
+                blend(pixel[2], key.rgb[2]),
+                255,
+            ]),
+        );
+    }
+
+    flattened
+}
+
+/// Places independently generated 256×256 animation moments into one stable
+/// horizontal 8-frame row. Every frame uses the same scale and the same
+/// content box; only the generated pose inside that box is allowed to vary.
+/// Keeps the previous animation frame everywhere except the explicitly
+/// allowed motion region. Image-edit providers may still redraw pixels outside
+/// their bbox, so their full output must never become the next reference frame.
+pub fn preserve_motion_region_from_generated(
+    previous: &RgbaImage,
+    generated: &RgbaImage,
+    motion_bbox: [u32; 4],
+) -> Result<RgbaImage, String> {
+    if previous.dimensions() != generated.dimensions() {
+        return Err(format!(
+            "animation frame dimensions do not match for motion-region compositing: previous {}x{}, generated {}x{}",
+            previous.width(),
+            previous.height(),
+            generated.width(),
+            generated.height(),
+        ));
+    }
+
+    let (width, height) = previous.dimensions();
+    let [min_x, min_y, max_x, max_y] = motion_bbox;
+    if min_x >= max_x || min_y >= max_y || min_x >= width || min_y >= height {
+        return Err(format!(
+            "invalid animation motion region [{min_x},{min_y},{max_x},{max_y}] for {width}x{height} frame"
+        ));
+    }
+    let max_x = max_x.min(width);
+    let max_y = max_y.min(height);
+    let mut composited = previous.clone();
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            composited.put_pixel(x, y, *generated.get_pixel(x, y));
+        }
+    }
+    Ok(composited)
+}
+
+pub fn assemble_animation_frames(frames: &[RgbaImage]) -> Result<RgbaImage, String> {
+    assemble_animation_frames_with_count(frames, DEFAULT_FRAME_COUNT)
+}
+
+pub fn assemble_animation_frames_with_count(
+    frames: &[RgbaImage],
+    frame_count: u32,
+) -> Result<RgbaImage, String> {
+    if frames.len() != frame_count as usize {
+        return Err(format!(
+            "animation sequence must contain exactly {frame_count} frames (received {})",
+            frames.len()
+        ));
+    }
+
+    // Keep the provider's full 256x256 coordinate system intact. Cropping to
+    // each frame's visible bounds makes shared furniture and props recenter
+    // whenever a pose changes its silhouette.
+    let row_width = FRAME_W
+        .checked_mul(frame_count)
+        .ok_or_else(|| "animation sequence width overflow".to_string())?;
+    let mut row = RgbaImage::new(row_width, FRAME_H);
+
+    for (frame_index, frame) in frames.iter().enumerate() {
+        if frame.dimensions() != (API_FRAME_W, API_FRAME_H) {
+            return Err(format!(
+                "animation sequence frame {frame_index} has invalid dimensions: expected {}x{}, got {}x{}",
+                API_FRAME_W,
+                API_FRAME_H,
+                frame.width(),
+                frame.height()
+            ));
+        }
+        if find_visible_bounds(frame).is_none() {
+            return Err(format!(
+                "animation sequence frame {frame_index} is empty after background removal"
+            ));
+        }
+
+        let scaled = DynamicImage::ImageRgba8(frame.clone())
+            .resize_exact(FRAME_W, FRAME_H, FilterType::Nearest)
+            .to_rgba8();
+        let frame_x = frame_index as u32 * FRAME_W;
+        image::imageops::replace(&mut row, &scaled, i64::from(frame_x), 0);
+    }
+
+    align_frames_to_shared_anchor(&mut row, frame_count);
+    Ok(row)
+}
+
+/// Validates a short, raw API-resolution chain before it is aligned or
+/// promoted to a complete sprite row. This is intentionally conservative:
+/// it catches whole-scene translation and repeated frames while allowing the
+/// local hand, head, or shoulder motion requested by the prompt.
+pub fn validate_animated_frame_sequence(
+    frames: &[RgbaImage],
+    expected_frame_count: u32,
+) -> Result<AnimationProbeValidation, String> {
+    validate_animated_frame_sequence_with_motion_region(frames, expected_frame_count, None)
+}
+
+/// Validates an animation chain and, when the provider supports precise local
+/// editing, rejects any meaningful redraw outside the allowed motion box. This
+/// prevents a prop such as the working laptop display from appearing halfway
+/// through a sequence after the first frame has established the scene.
+pub fn validate_animated_frame_sequence_with_motion_region(
+    frames: &[RgbaImage],
+    expected_frame_count: u32,
+    motion_bbox: Option<[u32; 4]>,
+) -> Result<AnimationProbeValidation, String> {
+    if frames.len() != expected_frame_count as usize {
+        return Err(format!(
+            "animation probe must contain exactly {expected_frame_count} frames (received {})",
+            frames.len()
+        ));
+    }
+    if frames.is_empty() {
+        return Err("animation probe must contain at least one frame".to_string());
+    }
+
+    for (frame_index, frame) in frames.iter().enumerate() {
+        if frame.dimensions() != (API_FRAME_W, API_FRAME_H) {
+            return Err(format!(
+                "animation probe frame {frame_index} has invalid dimensions: expected {}x{}, got {}x{}",
+                API_FRAME_W,
+                API_FRAME_H,
+                frame.width(),
+                frame.height()
+            ));
+        }
+        if find_visible_bounds(frame).is_none() {
+            return Err(format!(
+                "animation probe frame {frame_index} is empty after background removal"
+            ));
+        }
+    }
+
+    const MAX_ANCHOR_DRIFT: u32 = 8;
+    const CHANNEL_DELTA: u8 = 12;
+    const MIN_CHANGED_PIXELS: usize = 8;
+    const MAX_NON_MOTION_CHANGED_PIXELS: usize = 768;
+
+    let anchors = frames
+        .iter()
+        .enumerate()
+        .map(|(frame_index, frame)| {
+            frame_ground_anchor(frame).ok_or_else(|| {
+                format!("animation probe frame {frame_index} has no stable ground anchor")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let first_center = anchors[0].0;
+    let first_baseline = anchors[0].1;
+    let max_center_drift = anchors
+        .iter()
+        .map(|(center, _)| center.abs_diff(first_center))
+        .max()
+        .unwrap_or(0);
+    let max_baseline_drift = anchors
+        .iter()
+        .map(|(_, baseline)| baseline.abs_diff(first_baseline))
+        .max()
+        .unwrap_or(0);
+    if max_center_drift > MAX_ANCHOR_DRIFT || max_baseline_drift > MAX_ANCHOR_DRIFT {
+        return Err(format!(
+            "animation probe detected whole-scene drift: center {max_center_drift}px, baseline {max_baseline_drift}px"
+        ));
+    }
+
+    let mut min_changed_pixels = usize::MAX;
+    for frame_index in 0..frames.len().saturating_sub(1) {
+        let current = &frames[frame_index];
+        let next = &frames[frame_index + 1];
+        if let Some([min_x, min_y, max_x, max_y]) = motion_bbox {
+            let mut changed_outside_motion = 0usize;
+            for y in 0..API_FRAME_H {
+                for x in 0..API_FRAME_W {
+                    if x >= min_x && x < max_x && y >= min_y && y < max_y {
+                        continue;
+                    }
+                    let current_pixel = current.get_pixel(x, y);
+                    let next_pixel = next.get_pixel(x, y);
+                    let current_visible = current_pixel[3] > CHANNEL_DELTA;
+                    let next_visible = next_pixel[3] > CHANNEL_DELTA;
+                    if !current_visible && !next_visible {
+                        continue;
+                    }
+                    if current_pixel
+                        .0
+                        .iter()
+                        .zip(next_pixel.0.iter())
+                        .any(|(left, right)| (*left).abs_diff(*right) > CHANNEL_DELTA)
+                    {
+                        changed_outside_motion += 1;
+                    }
+                }
+            }
+            if changed_outside_motion > MAX_NON_MOTION_CHANGED_PIXELS {
+                return Err(format!(
+                    "animation frames {} and {} changed {changed_outside_motion} pixels outside the motion region; a new or removed object may have appeared",
+                    frame_index + 1,
+                    frame_index + 2,
+                ));
+            }
+        }
+        let mut changed_pixels = 0usize;
+        for (current_pixel, next_pixel) in current.pixels().zip(next.pixels()) {
+            let current_visible = current_pixel[3] > CHANNEL_DELTA;
+            let next_visible = next_pixel[3] > CHANNEL_DELTA;
+            if !current_visible && !next_visible {
+                continue;
+            }
+            if current_pixel
+                .0
+                .iter()
+                .zip(next_pixel.0.iter())
+                .any(|(left, right)| (*left).abs_diff(*right) > CHANNEL_DELTA)
+            {
+                changed_pixels += 1;
+            }
+        }
+        min_changed_pixels = min_changed_pixels.min(changed_pixels);
+        if changed_pixels < MIN_CHANGED_PIXELS {
+            return Err(format!(
+                "animation probe frame {} and frame {} have no visible motion",
+                frame_index + 1,
+                frame_index + 2
+            ));
+        }
+    }
+
+    Ok(AnimationProbeValidation {
+        passed: true,
+        max_center_drift,
+        max_baseline_drift,
+        min_changed_pixels: min_changed_pixels.min(u32::MAX as usize) as u32,
+    })
+}
+
+/// Rejects a sequence that looks like repeated stills after normalization.
+/// Independent model calls can still ignore a phase instruction and return a
+/// duplicate pose; that must never be persisted as an animated state.
+pub fn validate_animated_sprite_row(row: &RgbaImage) -> Result<(), String> {
+    validate_sprite_row(row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT)?;
+
+    const CHANNEL_DELTA: u8 = 12;
+    const MIN_CHANGED_PIXELS: usize = 4;
+    // The first and last frames may intentionally share the same pose to make
+    // the loop seamless. Validate the seven internal transitions; a static
+    // row still fails every one of them.
+    for frame_index in 0..(DEFAULT_FRAME_COUNT - 1) {
+        let next_frame_index = frame_index + 1;
+        let start_x = frame_index * FRAME_W;
+        let next_start_x = next_frame_index * FRAME_W;
+        let mut changed_pixels = 0usize;
+        for y in 0..FRAME_H {
+            for x in 0..FRAME_W {
+                let current = row.get_pixel(start_x + x, y);
+                let next = row.get_pixel(next_start_x + x, y);
+                let current_visible = current[3] > CHANNEL_DELTA;
+                let next_visible = next[3] > CHANNEL_DELTA;
+                if !current_visible && !next_visible {
+                    continue;
+                }
+                if current
+                    .0
+                    .iter()
+                    .zip(next.0.iter())
+                    .any(|(left, right)| (*left).abs_diff(*right) > CHANNEL_DELTA)
+                {
+                    changed_pixels += 1;
+                }
+            }
+        }
+        if changed_pixels < MIN_CHANGED_PIXELS {
+            return Err(format!(
+                "animated sequence frame {} and frame {} have no visible motion",
+                frame_index + 1,
+                next_frame_index + 1
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 pub fn normalize_base_image(bytes: &[u8], key: &ChromaKey) -> Result<RgbaImage, String> {
     let decoded =
         image::load_from_memory(bytes).map_err(|error| format!("decode image: {error}"))?;
@@ -986,13 +1309,19 @@ fn squared_rgb_distance(left: [u8; 3], right: [u8; 3]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_chroma_key, assemble_rows, build_row_reference, build_static_sprite_row, choose_chroma_key,
+        apply_chroma_key, assemble_animation_frames, assemble_animation_frames_with_count,
+        assemble_rows, build_row_reference,
+        build_static_sprite_row, choose_chroma_key, flatten_on_chroma_background,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
-        remove_chroma_background, validate_sprite_row, ChromaKey,
+        preserve_motion_region_from_generated,
+        remove_chroma_background, validate_animated_frame_sequence,
+        validate_animated_frame_sequence_with_motion_region, validate_animated_sprite_row,
+        validate_sprite_row, ChromaKey,
         CHROMA_KEY_CANDIDATES,
     };
     use crate::commands::generation::types::{
         API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+        ANIMATION_PROBE_FRAME_COUNT,
     };
     use base64::Engine;
     use image::{GenericImageView, ImageFormat, Rgba, RgbaImage};
@@ -1119,6 +1448,379 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn flattens_transparency_onto_the_selected_opaque_chroma_background() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let mut frame = RgbaImage::new(3, 1);
+        frame.put_pixel(1, 0, Rgba([20, 40, 60, 255]));
+        frame.put_pixel(2, 0, Rgba([0, 0, 0, 128]));
+
+        let flattened = flatten_on_chroma_background(&frame, &key);
+
+        assert_eq!(flattened.get_pixel(0, 0).0, [255, 0, 255, 255]);
+        assert_eq!(flattened.get_pixel(1, 0).0, [20, 40, 60, 255]);
+        assert_eq!(flattened.get_pixel(2, 0)[3], 255);
+        assert!(flattened.get_pixel(2, 0)[0] > 120);
+        assert!(flattened.pixels().all(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn assembles_eight_independent_frames_into_a_continuous_horizontal_sequence() {
+        let mut frames = Vec::new();
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72..184 {
+                for y in 32..224 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            let hand_x = 88 + frame_index * 8;
+            for x in hand_x..hand_x + 20 {
+                for y in 112..144 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            frames.push(frame);
+        }
+
+        let row = assemble_animation_frames(&frames).unwrap();
+
+        assert_eq!(row.dimensions(), (FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H));
+        validate_sprite_row(&row, FRAME_W, FRAME_H, DEFAULT_FRAME_COUNT).unwrap();
+        let frame0 = image::imageops::crop_imm(&row, 0, 0, FRAME_W, FRAME_H).to_image();
+        let frame1 = image::imageops::crop_imm(&row, FRAME_W, 0, FRAME_W, FRAME_H).to_image();
+        assert_ne!(frame0, frame1, "distinct generated poses must remain distinct");
+    }
+
+    #[test]
+    fn assembles_a_four_frame_probe_without_promoting_it_to_a_full_row() {
+        let frames = (0..ANIMATION_PROBE_FRAME_COUNT)
+            .map(|frame_index| {
+                let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+                for x in 72..184 {
+                    for y in 32..224 {
+                        frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                    }
+                }
+                frame.put_pixel(80 + frame_index, 120, Rgba([220, 80, 80, 255]));
+                frame
+            })
+            .collect::<Vec<_>>();
+
+        let row = assemble_animation_frames_with_count(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .unwrap();
+
+        assert_eq!(
+            row.dimensions(),
+            (FRAME_W * ANIMATION_PROBE_FRAME_COUNT, FRAME_H)
+        );
+        validate_sprite_row(&row, FRAME_W, FRAME_H, ANIMATION_PROBE_FRAME_COUNT).unwrap();
+    }
+
+    #[test]
+    fn accepts_local_motion_when_the_shared_ground_anchor_stays_fixed() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72..184 {
+                for y in 32..224 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            for x in 96 + frame_index * 8..112 + frame_index * 8 {
+                for y in 112..128 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            frames.push(frame);
+        }
+
+        let validation = validate_animated_frame_sequence(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .unwrap();
+
+        assert!(validation.passed);
+        assert_eq!(validation.max_center_drift, 0);
+        assert_eq!(validation.max_baseline_drift, 0);
+        assert!(validation.min_changed_pixels >= 8);
+    }
+
+    #[test]
+    fn rejects_a_new_object_outside_the_motion_region_after_the_first_frame() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 48..208 {
+                for y in 40..240 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            for x in 100 + frame_index * 4..116 + frame_index * 4 {
+                for y in 160..180 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            if frame_index >= 2 {
+                // The laptop display appears only after the sequence has
+                // already started. It is outside the allowed hand region and
+                // must be rejected as a sudden new object.
+                for x in 88..168 {
+                    for y in 72..132 {
+                        frame.put_pixel(x, y, Rgba([80, 180, 220, 255]));
+                    }
+                }
+            }
+            frames.push(frame);
+        }
+
+        let error = validate_animated_frame_sequence_with_motion_region(
+            &frames,
+            ANIMATION_PROBE_FRAME_COUNT,
+            Some([48, 176, 136, 224]),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("outside the motion region"));
+    }
+
+    #[test]
+    fn preserves_previous_frame_pixels_outside_the_motion_region() {
+        let previous = RgbaImage::from_pixel(API_FRAME_W, API_FRAME_H, Rgba([20, 30, 40, 255]));
+        let mut generated = RgbaImage::from_pixel(
+            API_FRAME_W,
+            API_FRAME_H,
+            Rgba([180, 190, 200, 255]),
+        );
+        for x in 104..136 {
+            for y in 168..188 {
+                generated.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+            }
+        }
+
+        let composited = preserve_motion_region_from_generated(
+            &previous,
+            &generated,
+            [48, 176, 136, 224],
+        )
+        .unwrap();
+
+        assert_eq!(composited.get_pixel(24, 24), previous.get_pixel(24, 24));
+        assert_eq!(composited.get_pixel(120, 100), previous.get_pixel(120, 100));
+        assert_eq!(composited.get_pixel(120, 176), generated.get_pixel(120, 176));
+    }
+
+    #[test]
+    fn ignores_low_alpha_fringe_when_finding_ground_anchor() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72..184 {
+                for y in 32..224 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            for x in 96 + frame_index * 8..112 + frame_index * 8 {
+                for y in 112..128 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            if frame_index == 0 {
+                // A chroma-removal fringe can leave a barely visible tail
+                // below the real support. It must not become the baseline.
+                frame.put_pixel(128, 236, Rgba([20, 30, 40, 8]));
+            }
+            frames.push(frame);
+        }
+
+        let validation = validate_animated_frame_sequence(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .expect("low-alpha fringe should not count as whole-scene drift");
+
+        assert_eq!(validation.max_center_drift, 0);
+        assert_eq!(validation.max_baseline_drift, 0);
+    }
+
+    #[test]
+    fn ignores_an_isolated_opaque_pixel_below_the_support_surface() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72..184 {
+                for y in 32..224 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            for x in 96 + frame_index * 8..112 + frame_index * 8 {
+                for y in 112..128 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            if frame_index == 0 {
+                frame.put_pixel(128, 236, Rgba([20, 30, 40, 255]));
+            }
+            frames.push(frame);
+        }
+
+        let validation = validate_animated_frame_sequence(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .expect("isolated pixel should not count as whole-scene drift");
+
+        assert_eq!(validation.max_center_drift, 0);
+        assert_eq!(validation.max_baseline_drift, 0);
+    }
+
+    #[test]
+    fn rejects_a_probe_when_the_whole_scene_drifts_vertically() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let offset = frame_index * 4;
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72..184 {
+                for y in 32 + offset..224 + offset {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            frames.push(frame);
+        }
+
+        let error = validate_animated_frame_sequence(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .unwrap_err();
+
+        assert!(error.contains("whole-scene drift"));
+        assert!(error.contains("baseline 12px"));
+    }
+
+    #[test]
+    fn rejects_a_probe_when_the_whole_scene_drifts_between_frames() {
+        let mut frames = Vec::new();
+        for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+            let offset = frame_index * 12;
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 72 + offset..184 + offset {
+                for y in 32..224 {
+                    frame.put_pixel(x, y, Rgba([20, 30, 40, 255]));
+                }
+            }
+            frames.push(frame);
+        }
+
+        let error = validate_animated_frame_sequence(&frames, ANIMATION_PROBE_FRAME_COUNT)
+            .unwrap_err();
+
+        assert!(error.contains("whole-scene drift"));
+    }
+
+    #[test]
+    fn assembly_preserves_shared_scene_coordinates_when_character_bounds_change() {
+        let mut frames = Vec::new();
+        let desk = Rgba([20, 220, 40, 255]);
+        let anchor = Rgba([80, 80, 220, 255]);
+
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let mut frame = RgbaImage::new(API_FRAME_W, API_FRAME_H);
+            for x in 100..156 {
+                for y in 160..170 {
+                    frame.put_pixel(x, y, desk);
+                }
+            }
+            let character_start = if frame_index % 2 == 0 { 20 } else { 196 };
+            for x in character_start..character_start + 40 {
+                for y in 40..150 {
+                    frame.put_pixel(x, y, Rgba([220, 80, 80, 255]));
+                }
+            }
+            // Keep the ground anchor fixed so any output difference comes from
+            // per-frame recentering, not from a legitimate whole-frame shift.
+            for x in 124..132 {
+                for y in 248..252 {
+                    frame.put_pixel(x, y, anchor);
+                }
+            }
+            frames.push(frame);
+        }
+
+        let row = assemble_animation_frames(&frames).unwrap();
+        let desk_lefts = (0..DEFAULT_FRAME_COUNT)
+            .map(|frame_index| {
+                let start_x = frame_index * FRAME_W;
+                (start_x..start_x + FRAME_W)
+                    .find(|x| {
+                        (0..FRAME_H).any(|y| {
+                            let pixel = row.get_pixel(*x, y);
+                            pixel[0] == desk[0] && pixel[1] == desk[1] && pixel[2] == desk[2]
+                        })
+                    })
+                    .map(|x| x - start_x)
+                    .expect("shared desk marker should remain visible")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            desk_lefts.windows(2).all(|pair| pair[0] == pair[1]),
+            "shared desk marker drifted after frame assembly: {desk_lefts:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_animation_sequence_with_the_wrong_number_of_frames() {
+        let frames = vec![RgbaImage::from_pixel(
+            API_FRAME_W,
+            API_FRAME_H,
+            Rgba([20, 30, 40, 255]),
+        ); DEFAULT_FRAME_COUNT as usize - 1];
+
+        let error = assemble_animation_frames(&frames).unwrap_err();
+
+        assert!(error.contains("exactly 8 frames"));
+    }
+
+    #[test]
+    fn rejects_eight_repeated_frames_as_a_static_animation() {
+        let row = RgbaImage::from_pixel(
+            FRAME_W * DEFAULT_FRAME_COUNT,
+            FRAME_H,
+            Rgba([20, 30, 40, 255]),
+        );
+
+        let error = validate_animated_sprite_row(&row).unwrap_err();
+
+        assert!(error.contains("no visible motion"));
+    }
+
+    #[test]
+    fn allows_large_pose_changes_when_every_frame_still_has_visible_motion() {
+        let mut row = RgbaImage::new(FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H);
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let frame_start = frame_index * FRAME_W;
+            let shape_start = if frame_index % 2 == 0 {
+                frame_start
+            } else {
+                frame_start + FRAME_W * 2 / 3
+            };
+            let shape_end = shape_start + FRAME_W / 3;
+            for x in shape_start..shape_end {
+                for y in 0..FRAME_H {
+                    row.put_pixel(x, y, Rgba([20, 40, 60, 255]));
+                }
+            }
+        }
+
+        validate_animated_sprite_row(&row).unwrap();
+    }
+
+    #[test]
+    fn allows_texture_redraw_when_the_silhouette_stays_stable() {
+        let mut row = RgbaImage::new(FRAME_W * DEFAULT_FRAME_COUNT, FRAME_H);
+        for frame_index in 0..DEFAULT_FRAME_COUNT {
+            let color = Rgba([20 + frame_index as u8 * 20, 40, 60, 255]);
+            let frame_start = frame_index * FRAME_W;
+            for x in frame_start + FRAME_W / 4..frame_start + FRAME_W * 3 / 4 {
+                for y in FRAME_H / 4..FRAME_H {
+                    row.put_pixel(x, y, color);
+                }
+            }
+        }
+
+        validate_animated_sprite_row(&row).unwrap();
     }
 
     #[test]

@@ -8,6 +8,10 @@ vi.stubGlobal('fetch', mockFetch);
 import { analyzePhoto, buildAnalysisMessages } from '../claude-vision';
 
 type RequestBody = {
+  model?: string;
+  max_tokens?: number;
+  thinking?: { type?: string };
+  reasoning_effort?: string;
   system?: string;
   messages: Array<{ content: Array<{ type: string; text?: string }> }>;
 };
@@ -30,13 +34,16 @@ function messageText(body: RequestBody): string {
   return body.messages[0].content.find((item) => item.type === 'text')?.text ?? '';
 }
 
-function expectSourceStyleContract(instruction: string): void {
-  const normalized = instruction.toLowerCase();
-  expect(normalized).toContain('source medium/style');
-  expect(normalized).toContain('preserve');
-  expect(normalized).toContain('photorealistic');
-  expect(normalized).toContain('faithfully');
-  expect(normalized).toContain('do not convert existing stylized artwork into generic q-version wording');
+function expectChineseCharacterOnlyContract(instruction: string): void {
+  expect(instruction).toContain('中文');
+  expect(instruction).toContain('第一印象');
+  expect(instruction).toContain('脸型');
+  expect(instruction).toContain('发型');
+  expect(instruction).toContain('不要描述背景');
+  expect(instruction).toContain('不要描述动作');
+  expect(instruction).toContain('镜头');
+  expect(instruction).toContain('光线');
+  expect(instruction).toContain('景深');
 }
 
 describe('claude-vision', () => {
@@ -51,46 +58,36 @@ describe('claude-vision', () => {
     expect(content.some((c) => c.type === 'text')).toBe(true);
   });
 
-  it('asks vision analysis to identify and preserve the input medium', async () => {
+  it('asks vision analysis for a Chinese character-only first impression', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ content: [{ type: 'text', text: 'stylized cartoon, orange fox' }] }),
+      json: async () => ({ content: [{ type: 'text', text: '橙色短毛的小狐狸角色' }] }),
     });
 
     await analyzePhoto('data:image/jpeg;base64,abc123', 'sk-ant-test');
     const body = getRequestBody();
-    const systemInstruction = body.system?.toLowerCase() ?? '';
-    const userInstruction = messageText(body).toLowerCase();
-
-    expect(systemInstruction).toContain('source medium/style');
-    expect(systemInstruction).toContain('preserve');
-    expect(systemInstruction).toContain('photorealistic');
-    expect(systemInstruction).toContain('faithfully');
-    expect(systemInstruction).toContain(
-      'do not convert existing stylized artwork into generic q-version wording'
-    );
-    expect(userInstruction).toContain('faithfully');
-    expect(userInstruction).toContain('source medium and style');
+    expectChineseCharacterOnlyContract(body.system ?? '');
+    expectChineseCharacterOnlyContract(messageText(body));
   });
 
-  it('analyzePhotoWithSettings sends the source-style contract to Anthropic', async () => {
+  it('analyzePhotoWithSettings sends the Chinese character-only contract to Anthropic', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ content: [{ type: 'text', text: 'source-style description' }] }),
+      json: async () => ({ content: [{ type: 'text', text: '圆脸黑色长发的年轻女性' }] }),
     });
 
     await analyzePhotoWithSettings('data:image/jpeg;base64,abc123', settingsFor('anthropic'));
     const body = getRequestBody();
 
-    expectSourceStyleContract(body.system ?? '');
-    expect(messageText(body).toLowerCase()).toContain('source medium and style');
+    expectChineseCharacterOnlyContract(body.system ?? '');
+    expectChineseCharacterOnlyContract(messageText(body));
   });
 
   it.each([
     {
       name: 'DeepSeek',
       provider: 'deepseek' as const,
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
+      endpoint: 'https://api.deepseek.com/chat/completions',
     },
     {
       name: 'Kimi',
@@ -98,18 +95,18 @@ describe('claude-vision', () => {
       endpoint: 'https://api.moonshot.cn/v1/chat/completions',
     },
   ])(
-    'analyzePhotoWithSettings sends the source-style contract to $name',
+    'analyzePhotoWithSettings sends the Chinese character-only contract to $name',
     async ({ provider, endpoint }) => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ choices: [{ message: { content: 'source-style description' } }] }),
+        json: async () => ({ choices: [{ message: { content: '圆脸黑色长发的年轻女性' } }] }),
       });
 
       await analyzePhotoWithSettings('data:image/jpeg;base64,abc123', settingsFor(provider));
       const body = getRequestBody();
 
       expect(mockFetch).toHaveBeenCalledWith(endpoint, expect.anything());
-      expectSourceStyleContract(messageText(body));
+      expectChineseCharacterOnlyContract(messageText(body));
     }
   );
 
@@ -163,5 +160,78 @@ describe('claude-vision', () => {
     await expect(analyzePhoto('data:image/jpeg;base64,abc', 'bad-key')).rejects.toThrow(
       '401'
     );
+  });
+
+  it('includes OpenAI-compatible API error details', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { message: 'model not found for this account' } }),
+    });
+
+    await expect(
+      analyzePhotoWithSettings('data:image/jpeg;base64,abc', settingsFor('kimi'))
+    ).rejects.toThrow('model not found for this account');
+  });
+
+  it.each(['deepseek', 'kimi'] as const)('disables thinking for short %s vision descriptions', async (provider) => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'black-haired chibi character' } }] }),
+    });
+
+    await analyzePhotoWithSettings('data:image/jpeg;base64,abc', {
+      ...settingsFor(provider),
+      visionModel: provider === 'kimi' ? 'kimi-k2.6' : 'deepseek-v4-flash-vision-exp',
+    });
+
+    const body = getRequestBody();
+    expect(body.model).toBe(provider === 'kimi' ? 'kimi-k2.6' : 'deepseek-v4-flash-vision-exp');
+    expect(body.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('uses low reasoning effort for Kimi K3 vision descriptions', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'black-haired chibi character' } }] }),
+    });
+
+    await analyzePhotoWithSettings('data:image/jpeg;base64,abc', {
+      ...settingsFor('kimi'),
+      visionModel: 'kimi-k3',
+    });
+
+    const body = getRequestBody();
+    expect(body.model).toBe('kimi-k3');
+    expect(body.thinking).toBeUndefined();
+    expect(body.reasoning_effort).toBe('low');
+    expect(body.max_tokens).toBe(512);
+  });
+
+  it('extracts text when a vision response returns content parts', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: [{ type: 'text', text: 'blue-eyed chibi character' }] } }],
+      }),
+    });
+
+    const result = await analyzePhotoWithSettings('data:image/jpeg;base64,abc', {
+      ...settingsFor('kimi'),
+      visionModel: 'kimi-k2.6',
+    });
+
+    expect(result).toBe('blue-eyed chibi character');
+  });
+
+  it('rejects an empty vision response instead of returning a blank description', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '' } }] }),
+    });
+
+    await expect(
+      analyzePhotoWithSettings('data:image/jpeg;base64,abc', settingsFor('deepseek'))
+    ).rejects.toThrow('returned an empty description');
   });
 });

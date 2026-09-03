@@ -18,8 +18,8 @@ interface AnalyzeStepProps {
 const VISION_OPTIONS: { value: VisionProvider; label: string; desc: string }[] = [
   { value: 'skip',      label: '跳过（手动输入）', desc: '自己描述角色特征' },
   { value: 'anthropic', label: 'Anthropic Claude', desc: '效果最佳' },
-  { value: 'deepseek',  label: 'DeepSeek',         desc: 'deepseek-vl2 视觉模型' },
-  { value: 'kimi',      label: 'Kimi（月之暗面）',  desc: 'moonshot 视觉模型' },
+  { value: 'deepseek',  label: 'DeepSeek',         desc: 'DeepSeek V4 Flash Vision 视觉模型' },
+  { value: 'kimi',      label: 'Kimi（月之暗面）',  desc: 'Kimi K2.6 / K3 视觉模型' },
 ];
 
 const SOURCE_STYLE_OPTIONS: { value: SourceStyle; label: string; desc: string }[] = [
@@ -127,7 +127,7 @@ export default function AnalyzeStep({
                 type="password"
                 value={settings.visionApiKey}
                 onChange={(e) => updateSettings({ visionApiKey: e.target.value })}
-                placeholder="粘贴 API Key…"
+                placeholder="粘贴 API 密钥…"
                 style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, width: '100%', boxSizing: 'border-box' }}
               />
               {visionModels.length > 0 && (
@@ -169,11 +169,11 @@ export default function AnalyzeStep({
         </label>
         <textarea
           id="prompt-textarea"
-          aria-label="character description"
+          aria-label="角色描述"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           rows={5}
-          placeholder="例：anime chibi girl, black twin-tail hair, red sailor uniform, blue eyes, cute expression..."
+          placeholder="例：年轻女性，圆脸，黑色长直发，五官柔和，气质温柔，穿米色刺绣上衣……"
           style={{
             width: '100%', padding: '8px 12px', borderRadius: 6,
             border: '1px solid #e2e8f0', fontSize: 13, resize: 'vertical',

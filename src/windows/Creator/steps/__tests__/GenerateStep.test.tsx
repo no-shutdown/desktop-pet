@@ -29,6 +29,9 @@ vi.mock('../../../../lib/settings', () => ({
   baseModelForProvider: (settings: { imageBaseModel: string; wanxiangBaseModel: string }, provider: string) => (
     provider === 'wanxiang' ? settings.wanxiangBaseModel : provider === 'localsd' ? '' : settings.imageBaseModel
   ),
+  rowModelForProvider: (settings: { imageReferenceModel: string; wanxiangEditModel: string }, provider: string) => (
+    provider === 'wanxiang' ? settings.wanxiangEditModel : settings.imageReferenceModel
+  ),
   SILICONFLOW_BASE_MODELS: [
     { value: 'base-model', label: 'Base model' },
     { value: 'other-base-model', label: 'Other base model' },

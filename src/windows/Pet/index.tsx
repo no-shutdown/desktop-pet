@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { exit } from '@tauri-apps/plugin-process';
+import type { Menu } from '@tauri-apps/api/menu';
 import type { MouseEvent } from 'react';
-import ContextMenu from './ContextMenu';
+import { createPetContextMenu } from './ContextMenu';
 import SpeechBubble from './SpeechBubble';
 import PetPicker from './PetPicker';
 import { usePetStore } from '../../store/petStore';
@@ -16,9 +17,7 @@ import { type Pet, type PetState } from '../../types/pet';
 
 export default function PetWindow() {
   const { petState, setPetState, activePet, setActivePet } = usePetStore();
-  const [menu, setMenu] = useState<{ x: number; y: number; visible: boolean }>({
-    x: 0, y: 0, visible: false,
-  });
+  const nativeMenuRef = useRef<Promise<Menu> | null>(null);
   const [bubbleText, setBubbleText] = useState<string | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const [allPets, setAllPets] = useState<Pet[]>([]);
@@ -125,19 +124,11 @@ export default function PetWindow() {
     return () => { cleanupFn?.(); };
   }, [setPetState]);
 
-  const handleContextMenu = (e: MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setMenu({ x: e.clientX, y: e.clientY, visible: true });
-  };
-
   const handleOpenCreator = async () => {
-    setMenu((prev) => ({ ...prev, visible: false }));
     await invoke('open_creator');
   };
 
   async function handleSwitchPet() {
-    setMenu((prev) => ({ ...prev, visible: false }));
     try {
       const pets = await invoke<Pet[]>('list_pets');
       const sorted = [...pets].sort((a, b) =>
@@ -147,6 +138,33 @@ export default function PetWindow() {
     } catch {}
     setShowPicker(true);
   }
+
+  useEffect(() => () => {
+    const menuPromise = nativeMenuRef.current;
+    nativeMenuRef.current = null;
+    if (menuPromise) {
+      void menuPromise.then((nativeMenu) => nativeMenu.close()).catch(() => undefined);
+    }
+  }, []);
+
+  const handleContextMenu = async (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      nativeMenuRef.current ??= createPetContextMenu({
+        onSwitchAction: setPetState,
+        onSwitchPet: () => { void handleSwitchPet(); },
+        onOpenCreator: () => { void handleOpenCreator(); },
+        onExit: () => { void exit(0); },
+      });
+      const nativeMenu = await nativeMenuRef.current;
+      await nativeMenu.popup(undefined, getCurrentWindow());
+    } catch (error) {
+      nativeMenuRef.current = null;
+      console.error('[pet] Failed to open context menu:', error);
+    }
+  };
 
   const handleMouseDown = (e: MouseEvent) => {
     if (e.button !== 0 || showPicker) return;
@@ -180,15 +198,6 @@ export default function PetWindow() {
         />
       )}
 
-      <ContextMenu
-        x={menu.x}
-        y={menu.y}
-        visible={menu.visible}
-        onClose={() => setMenu((prev) => ({ ...prev, visible: false }))}
-        onSwitchPet={handleSwitchPet}
-        onOpenCreator={handleOpenCreator}
-        onExit={() => exit(0)}
-      />
     </div>
   );
 }

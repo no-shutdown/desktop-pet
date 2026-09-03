@@ -41,13 +41,12 @@ export const ANTHROPIC_MODELS = [
 ];
 
 export const DEEPSEEK_MODELS = [
-  { value: 'deepseek-vl2', label: 'DeepSeek-VL2' },
-  { value: 'deepseek-vl2-tiny', label: 'DeepSeek-VL2 Tiny（快速）' },
+  { value: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek V4 Flash Vision（视觉）' },
 ];
 
 export const KIMI_MODELS = [
-  { value: 'moonshot-v1-8k-vision-preview', label: 'Moonshot 8K 视觉' },
-  { value: 'moonshot-v1-32k-vision-preview', label: 'Moonshot 32K 视觉' },
+  { value: 'kimi-k2.6', label: 'Kimi K2.6（视觉）' },
+  { value: 'kimi-k3', label: 'Kimi K3（最新视觉）' },
 ];
 
 export const SILICONFLOW_BASE_MODELS = [
@@ -149,6 +148,17 @@ function normalizeImageProvider(value: unknown): ImageProvider {
   return 'siliconflow';
 }
 
+function normalizeVisionModel(provider: VisionProvider, value: unknown): string {
+  const storedModel = nonEmptyString(value);
+  if (
+    (provider === 'deepseek' || provider === 'kimi')
+    && !getVisionModels(provider).some(({ value: model }) => model === storedModel)
+  ) {
+    return defaultVisionModel(provider);
+  }
+  return storedModel ?? DEFAULT_SETTINGS.visionModel;
+}
+
 const STORAGE_KEY = 'desktop-pet-settings';
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -180,14 +190,15 @@ export function normalizeSettings(raw: unknown): AppSettings {
   const rowImageProvider = stored.rowImageProvider !== undefined
     ? normalizeImageProvider(stored.rowImageProvider)
     : imageProvider;
+  const visionProvider = isVisionProvider(stored.visionProvider)
+    ? stored.visionProvider
+    : DEFAULT_SETTINGS.visionProvider;
 
   return {
     ...DEFAULT_SETTINGS,
-    visionProvider: isVisionProvider(stored.visionProvider)
-      ? stored.visionProvider
-      : DEFAULT_SETTINGS.visionProvider,
+    visionProvider,
     visionApiKey: nonEmptyString(stored.visionApiKey) ?? '',
-    visionModel: nonEmptyString(stored.visionModel) ?? DEFAULT_SETTINGS.visionModel,
+    visionModel: normalizeVisionModel(visionProvider, stored.visionModel),
     imageProvider,
     rowImageProvider,
     imageApiKey: nonEmptyString(stored.imageApiKey) ?? '',

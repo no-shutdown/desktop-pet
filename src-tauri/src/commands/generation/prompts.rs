@@ -1,4 +1,6 @@
-use super::types::{FrameVariation, SourceStyle, StateDefinition, CANONICAL_FACING};
+use super::types::{
+    FrameVariation, SourceStyle, StateDefinition, CANONICAL_FACING, DEFAULT_FRAME_COUNT,
+};
 
 const BASE_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, enclosed background fragments, background-colored holes between hair/body parts, shadow, glow, halos, particles, detached effects, color spill, gradients, vignette, or key color inside the character";
 const ROW_NEGATIVE_EXCLUSIONS: &str = "no extra characters, scenery, text, labels, logos, watermark, UI, grid, border, checkerboard, column divider, slot outline, enclosed background fragments, background-colored holes between hair/body parts, shadow, glow, halos, particles, detached effects, color spill, motion blur, speed lines, dust, stray pixels, gradients, vignette, or key color inside the character";
@@ -91,6 +93,119 @@ pub fn build_row_prompt(
     )
 }
 
+/// Builds the prompt for one independently generated animation moment. Image
+/// editing models tend to copy a tiled reference sheet verbatim, so animated
+/// states are generated one square frame at a time and assembled by the
+/// caller. The phase instruction gives each request a concrete place in the
+/// loop instead of asking the model to invent all eight poses at once.
+pub fn build_animation_frame_prompt(
+    base_description: &str,
+    source_style: SourceStyle,
+    chroma_hex: &str,
+    chroma_name: &str,
+    state: &StateDefinition,
+    frame_index: u32,
+) -> String {
+    let description = truncate_description(base_description);
+    let chroma_exclusion = chroma_component_exclusion(chroma_hex);
+    let style_contract = row_source_style_contract(source_style);
+    let safe_frame_index = frame_index.min(DEFAULT_FRAME_COUNT.saturating_sub(1));
+    let frame_number = safe_frame_index + 1;
+    let phase = animation_phase_instruction(state.key, safe_frame_index);
+    let motion_region = animation_motion_region(state.key);
+    let frame_task = if safe_frame_index == 0 {
+        "Create exactly ONE full-body animation frame"
+    } else {
+        "Edit the attached previous animation frame in place and produce exactly ONE full-body animation frame"
+    };
+    let reference_contract = if safe_frame_index == 0 {
+        "REFERENCE ROLE: the attached image is the canonical character reference. Create the first action pose and establish the exact character scale, position, furniture geometry, prop geometry, and camera composition that every later frame must inherit."
+    } else {
+        "PREVIOUS-FRAME CONTINUITY LOCK: the attached image is the immediately previous animation frame, not a loose style reference. Preserve its exact character identity, face, hair, clothing, proportions, linework, colors, lighting, scale, baseline, camera, crop, furniture, props, and background. Perform an in-place micro-edit: change ONLY the smallest local body region required by the current frame phase. Keep all unaffected pixels and geometry visually identical. Do not redraw, redesign, reinterpret, replace, resize, recenter, zoom, rotate, mirror, or restyle the scene."
+    };
+    let edit_scope = if safe_frame_index == 0 {
+        ""
+    } else {
+        "PIXEL-PRESERVATION EDIT SCOPE: change only the requested motion region; outside that region preserve the attached canvas pixel-for-pixel, including the chroma background, furniture, props, ground line, camera, and character lower body. Do not regenerate, recenter, or recompose the whole canvas. OBJECT INVENTORY LOCK: keep exactly the same objects as the attached frame. Never add, remove, reveal, hide, uncover, replace, or introduce any character, prop, furniture, accessory, screen, or device. If an item is absent in the attached frame, keep it absent forever."
+    };
+    let working_inventory_lock = if state.key == "working" {
+        "WORKING INVENTORY LOCK: frame 1 establishes the complete object inventory. It must contain exactly one open laptop with the same upright display, bezel, hinge, keyboard deck, desk, and chair; every later frame must contain those same objects in the same positions. Never reveal the laptop screen later, and never make the laptop, desk, or chair appear, disappear, or transform."
+    } else {
+        ""
+    };
+    let motion_contract = if safe_frame_index == 0 {
+        "Establish the sequence's stable action scene in this first frame; later frames will make only incremental local edits to it."
+    } else {
+        "The difference from the attached previous frame must be small, local, and continuous; preserve the established scene and move only the specified body parts by one incremental step. Never jump directly to an unrelated pose."
+    };
+
+    format!(
+        "{frame_task}, frame {frame_number} of {DEFAULT_FRAME_COUNT}, of {description} performing this action: {}. Requirements: {}. {style_contract} {ROW_FACING_LOCK} {reference_contract} {edit_scope} {working_inventory_lock} Do not draw a sprite sheet, grid, multiple columns, multiple poses, extra characters, or a before/after comparison. This is one square frame that will be placed into an 8-frame sequence. Frame phase instruction: {phase}. {motion_region} {motion_contract} The character faces {} in this frame without exception; keep the head angle, body orientation, gaze direction, and camera relationship locked unless the phase explicitly requests a tiny upper-body sway. Output exactly one complete centered pose on the same flat {chroma_name} chroma background ({chroma_hex}) filling the 256x256 canvas edge-to-edge. No detached effects, text, UI, borders, dividers, shadows, glow, motion blur, or cropped limbs. {} {}",
+        state.action,
+        state.requirements,
+        state.facing,
+        ROW_NEGATIVE_EXCLUSIONS,
+        chroma_exclusion,
+    )
+}
+
+/// Returns a conservative 256×256 edit box for the only body region allowed
+/// to change in each animated state. Wanxiang 2.7 uses this as an API-level
+/// precise-edit constraint for every frame after the first scene frame.
+pub fn animation_motion_bbox(state_key: &str) -> Option<[u32; 4]> {
+    match state_key {
+        "sleeping" => Some([32, 32, 224, 184]),
+        "acting_cute" => Some([32, 48, 224, 192]),
+        "working" => Some([48, 176, 136, 224]),
+        _ => None,
+    }
+}
+
+fn animation_motion_region(state_key: &str) -> &'static str {
+    match state_key {
+        "sleeping" => "MOTION REGION LOCK: only the head, shoulders, and upper back may change for the breathing phase; all pixels outside this motion region must remain unchanged, especially the folded arms, desk, chair, hips, legs, and background.",
+        "acting_cute" => "MOTION REGION LOCK: only the hands, arms, and a tiny upper-body sway may change for the cute phase; all pixels outside this motion region must remain unchanged, especially the face, legs, baseline, and background.",
+        "working" => "MOTION REGION LOCK: only the wrists, hands, and fingers may change for the typing phase; all pixels outside this motion region must remain unchanged, especially the head, torso, laptop screen, keyboard deck, desk, chair, and background.",
+        _ => "MOTION REGION LOCK: no body region may change except the exact region named by the frame phase; all pixels outside this motion region must remain unchanged.",
+    }
+}
+
+fn animation_phase_instruction(state_key: &str, frame_index: u32) -> &'static str {
+    match state_key {
+        "sleeping" => match frame_index {
+            0 => "begin at the middle of the breathing cycle, with the head and shoulders resting at a neutral height on the folded arms",
+            1 => "inhale begins: raise only the head, shoulders, and upper back slightly and visibly above the desk",
+            2 => "inhale peak: head, shoulders, and upper back are at their highest gentle point while the folded arms remain on the desk",
+            3 => "exhale begins: lower the head and shoulders by a small continuous increment toward the desk",
+            4 => "return through the neutral middle of the breathing cycle",
+            5 => "exhale continues: lower the head and shoulders slightly below the neutral middle point",
+            6 => "exhale trough: head, shoulders, and upper back reach the lowest gentle point while remaining asleep on the arms",
+            _ => "start the next inhale: rise slightly from the trough so this frame connects smoothly back to frame 1",
+        },
+        "acting_cute" => match frame_index {
+            0 => "centered starting pose with both hands close to the face or chest",
+            1 => "a small visible sway toward the character's left while both hands remain close to the face or chest",
+            2 => "the leftmost point of the gentle sway, still front-facing and planted in place",
+            3 => "returning continuously from the left toward the centered pose",
+            4 => "a small visible sway toward the character's right while both hands remain close to the face or chest",
+            5 => "the rightmost point of the gentle sway, still front-facing and planted in place",
+            6 => "returning continuously from the right toward center",
+            _ => "centered end pose that connects smoothly back to frame 1, with a subtle affectionate expression",
+        },
+        "working" => match frame_index {
+            0 => "both hands at a neutral typing position on the keyboard deck, with the open screen and desk fixed",
+            1 => "the left fingers visibly press a few keys while the right hand stays poised, with the laptop screen unchanged",
+            2 => "the left hand returns slightly and the right fingers visibly press keys, with elbows and shoulders still",
+            3 => "both hands pass through the middle typing position, visibly different from frame 1 and frame 2",
+            4 => "the right fingers reach their small typing peak while the left hand stays poised, with the screen and desk fixed",
+            5 => "the right hand returns slightly and the left fingers visibly press keys again",
+            6 => "both hands make a small alternating key-press motion, without moving the torso, head, desk, or laptop",
+            _ => "both hands return toward the starting typing position so the loop connects smoothly back to frame 1",
+        },
+        _ => "keep the pose nearly static and preserve the canonical base pose",
+    }
+}
+
 fn base_source_style_contract(source_style: SourceStyle) -> &'static str {
     match source_style {
         SourceStyle::Realistic => REALISTIC_BASE_STYLE_CONTRACT,
@@ -131,7 +246,10 @@ fn truncate_description(description: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_base_prompt, build_base_prompt_with_style_reference, build_row_prompt};
+    use super::{
+        animation_motion_bbox, build_animation_frame_prompt, build_base_prompt,
+        build_base_prompt_with_style_reference, build_row_prompt,
+    };
     use crate::commands::generation::types::{
         state_definition, state_definitions, SourceStyle, CANONICAL_FACING,
     };
@@ -371,7 +489,7 @@ mod tests {
         }
 
         for term in [
-            "only localized arm, wrist, hand, and finger typing motion may change",
+            "visible localized arm, wrist, hand, and finger typing motion advances",
             "head angle, body orientation, gaze direction, and camera relationship are locked and unchanged",
         ] {
             assert!(prompt.contains(term), "missing working lock term: {term}");
@@ -523,5 +641,111 @@ mod tests {
                 state.key
             );
         }
+    }
+
+    #[test]
+    fn single_animation_frame_prompt_assigns_a_concrete_phase_without_requesting_a_sprite_sheet() {
+        let state = state_definition("working").unwrap();
+        let first = build_animation_frame_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state,
+            0,
+        )
+        .to_lowercase();
+        let second = build_animation_frame_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state,
+            1,
+        )
+        .to_lowercase();
+
+        assert!(first.contains("exactly one full-body animation frame"));
+        assert!(first.contains("frame 1 of 8"));
+        assert!(second.contains("frame 2 of 8"));
+        assert!(first.contains("both hands at a neutral typing position"));
+        assert!(second.contains("left fingers visibly press"));
+        assert!(first.contains("attached image is the canonical character reference"));
+        assert!(first.contains("establish the sequence's stable action scene"));
+        assert!(second.contains("previous-frame continuity lock"));
+        assert!(second.contains("immediately previous animation frame"));
+        assert!(second.contains("in-place micro-edit"));
+        assert!(second.contains("pixel-preservation edit scope"));
+        assert!(second.contains("pixel-for-pixel"));
+        assert!(second.contains("keep all unaffected pixels and geometry visually identical"));
+        assert!(second.contains("difference from the attached previous frame must be small"));
+        assert!(first.contains("do not draw a sprite sheet"));
+        assert!(first.contains("256x256"));
+        assert!(first.contains("facing direction lock"));
+        assert!(!first.contains("2048 pixels wide by 256 pixels tall"));
+    }
+
+    #[test]
+    fn animation_frame_prompt_limits_edits_to_the_state_motion_region() {
+        let expected_regions = [
+            ("sleeping", "head, shoulders, and upper back"),
+            ("acting_cute", "hands, arms, and a tiny upper-body sway"),
+            ("working", "wrists, hands, and fingers"),
+        ];
+
+        for (state_key, region) in expected_regions {
+            let prompt = build_animation_frame_prompt(
+                "a canonical pet",
+                SourceStyle::Stylized,
+                "#FF00FF",
+                "magenta",
+                state_definition(state_key).unwrap(),
+                1,
+            )
+            .to_lowercase();
+
+            assert!(prompt.contains("motion region lock"), "missing region lock for {state_key}");
+            assert!(prompt.contains(region), "missing motion region for {state_key}");
+            assert!(
+                prompt.contains("all pixels outside this motion region must remain unchanged"),
+                "missing immutable-pixel rule for {state_key}"
+            );
+        }
+    }
+
+    #[test]
+    fn working_prompt_locks_the_laptop_inventory_from_the_first_frame() {
+        let first = build_animation_frame_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state_definition("working").unwrap(),
+            0,
+        )
+        .to_lowercase();
+        let later = build_animation_frame_prompt(
+            "a canonical pet",
+            SourceStyle::Stylized,
+            "#FF00FF",
+            "magenta",
+            state_definition("working").unwrap(),
+            1,
+        )
+        .to_lowercase();
+
+        assert!(first.contains("working inventory lock"));
+        assert!(first.contains("complete object inventory"));
+        assert!(later.contains("object inventory lock"));
+        assert!(later.contains("if an item is absent in the attached frame, keep it absent forever"));
+        assert!(later.contains("never reveal the laptop screen later"));
+    }
+
+    #[test]
+    fn animation_motion_bboxes_cover_only_the_allowed_body_region() {
+        assert_eq!(animation_motion_bbox("sleeping"), Some([32, 32, 224, 184]));
+        assert_eq!(animation_motion_bbox("acting_cute"), Some([32, 48, 224, 192]));
+        assert_eq!(animation_motion_bbox("working"), Some([48, 176, 136, 224]));
+        assert_eq!(animation_motion_bbox("idle"), None);
     }
 }

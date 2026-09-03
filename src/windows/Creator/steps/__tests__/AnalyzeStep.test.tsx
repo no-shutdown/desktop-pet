@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 vi.mock('../../../../lib/vision', () => ({
-  analyzePhotoWithSettings: vi.fn().mockResolvedValue('anime chibi girl, black hair'),
+  analyzePhotoWithSettings: vi.fn().mockResolvedValue('年轻女性，圆脸，黑色长直发，气质温柔'),
 }));
 vi.mock('../../../../lib/settings', () => ({
   loadSettings: vi.fn().mockReturnValue({
@@ -39,12 +39,21 @@ describe('AnalyzeStep', () => {
 
   it('renders the API key input', () => {
     render(<AnalyzeStep {...defaultProps} />);
-    expect(screen.getByPlaceholderText(/API Key/)).toBeTruthy();
+    expect(screen.getByPlaceholderText(/API 密钥/)).toBeTruthy();
   });
 
   it('renders the prompt textarea', () => {
     render(<AnalyzeStep {...defaultProps} />);
-    expect(screen.getByRole('textbox', { name: /character description/i })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: /角色描述/ })).toBeTruthy();
+  });
+
+  it('uses Chinese text for the prompt input', () => {
+    render(<AnalyzeStep {...defaultProps} />);
+
+    expect(screen.getByRole('textbox', { name: /角色描述/ })).toHaveAttribute(
+      'placeholder',
+      '例：年轻女性，圆脸，黑色长直发，五官柔和，气质温柔，穿米色刺绣上衣……'
+    );
   });
 
   it('shows Chinese labels for the source style choices', () => {
@@ -84,15 +93,15 @@ describe('AnalyzeStep', () => {
     render(<AnalyzeStep {...defaultProps} />);
     fireEvent.click(screen.getByRole('button', { name: /AI 分析照片/ }));
     await waitFor(() => {
-      const textarea = screen.getByRole('textbox', { name: /character description/i }) as HTMLTextAreaElement;
-      expect(textarea.value).toBe('anime chibi girl, black hair');
+      const textarea = screen.getByRole('textbox', { name: /角色描述/ }) as HTMLTextAreaElement;
+      expect(textarea.value).toBe('年轻女性，圆脸，黑色长直发，气质温柔');
     });
   });
 
   it('Next button passes prompt to onNext', async () => {
     const onNext = vi.fn();
     render(<AnalyzeStep {...defaultProps} onNext={onNext} />);
-    const textarea = screen.getByRole('textbox', { name: /character description/i });
+    const textarea = screen.getByRole('textbox', { name: /角色描述/ });
     fireEvent.change(textarea, { target: { value: 'my custom prompt' } });
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
     expect(onNext).toHaveBeenCalledWith('my custom prompt', 'realistic');
@@ -101,7 +110,7 @@ describe('AnalyzeStep', () => {
   it('passes the selected source style with the description', () => {
     const onNext = vi.fn();
     render(<AnalyzeStep {...defaultProps} onNext={onNext} />);
-    fireEvent.change(screen.getByRole('textbox', { name: /character description/i }), {
+    fireEvent.change(screen.getByRole('textbox', { name: /角色描述/ }), {
       target: { value: 'pink cartoon character' },
     });
     fireEvent.click(screen.getByRole('radio', { name: /卡通 \/ 插画作品/ }));

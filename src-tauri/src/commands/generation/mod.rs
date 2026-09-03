@@ -10,7 +10,10 @@ pub use run::{
     reset_rows_after_base_retry, run_dir, runs_dir, save_manifest, validate_pet_id,
     validate_run_id,
 };
-pub use types::{AssembleRunPreviewResult, BasePreviewResult, StateRowResult};
+pub use types::{
+    AssembleRunPreviewResult, BasePreviewResult, StateProbeResult, StatePromptPreviewResult,
+    StateRowResult,
+};
 
 use crate::models::SpriteStateInfo;
 use base64::Engine as _;
@@ -19,23 +22,30 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
-use self::prompts::{build_base_prompt_with_style_reference, build_row_prompt};
-use self::providers::{clamp_denoising_strength, generate_base, generate_row};
+use self::prompts::{
+    animation_motion_bbox, build_animation_frame_prompt, build_base_prompt_with_style_reference,
+};
+use self::providers::{clamp_denoising_strength, generate_base, generate_frame};
 use self::run::{
     load_manifest as load_run_manifest, mark_base_complete as complete_base,
     mark_base_generating as begin_base, mark_failed as fail_run_artifact,
     mark_state_complete as complete_state, mark_state_generating as begin_state,
 };
 use self::sprite::{
-    assemble_rows, build_row_reference, build_static_sprite_row, choose_chroma_key, chroma_key_from_hex,
-    ensure_wanxiang_reference_size, image_to_data_url, normalize_base_image,
-    normalize_horizontal_row, validate_sprite_row, ChromaKey,
+    assemble_animation_frames, assemble_rows, build_static_sprite_row, choose_chroma_key,
+    chroma_key_from_hex, ensure_wanxiang_reference_size, flatten_on_chroma_background,
+    assemble_animation_frames_with_count, image_to_data_url, normalize_base_image,
+    preserve_motion_region_from_generated,
+    validate_animated_frame_sequence_with_motion_region, validate_animated_sprite_row,
+    validate_sprite_row, ChromaKey,
 };
 use self::types::{
     state_definition, state_definitions, ArtifactStatus, GenerationRunManifest, ProviderConfig,
-    SourceStyle, StateDefinition, API_FRAME_H, API_FRAME_W, DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
+    SourceStyle, StateDefinition, API_FRAME_H, API_FRAME_W, ANIMATION_PROBE_FRAME_COUNT,
+    DEFAULT_FRAME_COUNT, FRAME_H, FRAME_W,
 };
 
 const DEFAULT_BASE_MODEL: &str = "Tongyi-MAI/Z-Image-Turbo";
@@ -45,6 +55,16 @@ const DEFAULT_DENOISING_STRENGTH: f32 = 0.55;
 const MAX_RUN_ERROR_BYTES: usize = 512;
 const MAX_REFERENCE_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REFERENCE_BASE64_BYTES: usize = ((MAX_REFERENCE_IMAGE_BYTES + 2) / 3) * 4;
+const ANIMATION_PROBE_DIR: &str = "probes";
+const ANIMATION_PROBE_MANIFEST: &str = "manifest.json";
+const ANIMATION_PROBE_VERSION: &str = "wan27-precise-edit-v2-inventory-lock";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AnimationProbeRecord {
+    state: String,
+    signature: String,
+    frame_count: u32,
+}
 
 pub fn validate_state_name(state: &str) -> Result<&'static StateDefinition, String> {
     state_definition(state).ok_or_else(|| format!("unknown generation state: {state}"))
@@ -886,41 +906,6 @@ pub(crate) fn finish_base_result_at(
     Ok(base)
 }
 
-pub(crate) fn finish_state_result_at(
-    app_data_dir: &Path,
-    run_id: &str,
-    state: &str,
-    selected_key: &ChromaKey,
-    provider_result: Result<Vec<u8>, String>,
-    api_key: Option<&str>,
-) -> Result<RgbaImage, String> {
-    let generated_bytes = match provider_result {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(mark_command_failed(
-                app_data_dir,
-                run_id,
-                state,
-                &error,
-                api_key,
-            ));
-        }
-    };
-    let row = match normalize_horizontal_row(&generated_bytes, selected_key) {
-        Ok(row) => row,
-        Err(error) => {
-            return Err(mark_command_failed(
-                app_data_dir,
-                run_id,
-                state,
-                &error,
-                api_key,
-            ));
-        }
-    };
-    finish_normalized_state_row_at(app_data_dir, run_id, state, row, api_key)
-}
-
 pub(crate) fn finish_normalized_state_row_at(
     app_data_dir: &Path,
     run_id: &str,
@@ -982,6 +967,337 @@ pub(crate) fn assemble_run_preview_at(
         frame_h: FRAME_H,
         frame_count: DEFAULT_FRAME_COUNT,
         row_gap: 0,
+    })
+}
+
+fn animation_probe_dir(
+    app_data_dir: &Path,
+    run_id: &str,
+    state: &str,
+) -> Result<PathBuf, String> {
+    validate_state_name(state)?;
+    let run = run_dir(app_data_dir, run_id)?;
+    let probe_dir = run.join(ANIMATION_PROBE_DIR).join(state);
+    if !probe_dir.starts_with(&run) {
+        return Err("animation probe path escaped the generation run".to_string());
+    }
+    Ok(probe_dir)
+}
+
+fn animation_probe_signature(
+    manifest: &GenerationRunManifest,
+    selected_key: &ChromaKey,
+    config: &ProviderConfig,
+) -> String {
+    format!(
+        "{}\n{:?}\n{}\n{}\n{}\n{}\n{}\n{}",
+        ANIMATION_PROBE_VERSION,
+        manifest.source_style,
+        manifest.base_prompt,
+        selected_key.hex,
+        config.provider.trim(),
+        config.reference_model.trim(),
+        config.local_sd_url.trim(),
+        config.denoising_strength.to_bits(),
+    )
+}
+
+fn precise_animation_motion_bbox(config: &ProviderConfig, state: &str) -> Option<[u32; 4]> {
+    if config.provider.trim().eq_ignore_ascii_case("wanxiang")
+        && matches!(
+            config.reference_model.trim(),
+            "wan2.7-image" | "wan2.7-image-pro"
+        )
+    {
+        animation_motion_bbox(state)
+    } else {
+        None
+    }
+}
+
+fn save_animation_probe(
+    app_data_dir: &Path,
+    run_id: &str,
+    state: &str,
+    manifest: &GenerationRunManifest,
+    selected_key: &ChromaKey,
+    config: &ProviderConfig,
+    frames: &[RgbaImage],
+) -> Result<(), String> {
+    if frames.len() != ANIMATION_PROBE_FRAME_COUNT as usize {
+        return Err(format!(
+            "animation probe must contain exactly {ANIMATION_PROBE_FRAME_COUNT} frames (received {})",
+            frames.len()
+        ));
+    }
+    let probe_dir = animation_probe_dir(app_data_dir, run_id, state)?;
+    std::fs::create_dir_all(&probe_dir)
+        .map_err(|error| format!("create animation probe directory: {error}"))?;
+    for (frame_index, frame) in frames.iter().enumerate() {
+        write_png(
+            &probe_dir.join(format!("frame-{frame_index}.png")),
+            frame,
+        )?;
+    }
+    let record = AnimationProbeRecord {
+        state: state.to_string(),
+        signature: animation_probe_signature(manifest, selected_key, config),
+        frame_count: ANIMATION_PROBE_FRAME_COUNT,
+    };
+    let record_bytes = serde_json::to_vec_pretty(&record)
+        .map_err(|error| format!("serialize animation probe: {error}"))?;
+    std::fs::write(probe_dir.join(ANIMATION_PROBE_MANIFEST), record_bytes)
+        .map_err(|error| format!("write animation probe: {error}"))?;
+    Ok(())
+}
+
+fn load_animation_probe(
+    app_data_dir: &Path,
+    run_id: &str,
+    state: &str,
+    manifest: &GenerationRunManifest,
+    selected_key: &ChromaKey,
+    config: &ProviderConfig,
+) -> Result<Vec<RgbaImage>, String> {
+    let probe_dir = animation_probe_dir(app_data_dir, run_id, state)?;
+    let record_path = probe_dir.join(ANIMATION_PROBE_MANIFEST);
+    let record_bytes = std::fs::read(&record_path)
+        .map_err(|error| format!("read saved animation probe: {error}"))?;
+    let record: AnimationProbeRecord = serde_json::from_slice(&record_bytes)
+        .map_err(|error| format!("parse saved animation probe: {error}"))?;
+    if record.state != state
+        || record.frame_count != ANIMATION_PROBE_FRAME_COUNT
+        || record.signature != animation_probe_signature(manifest, selected_key, config)
+    {
+        return Err(
+            "saved animation probe no longer matches the current prompt, base, or provider settings"
+                .to_string(),
+        );
+    }
+
+    let mut frames = Vec::with_capacity(ANIMATION_PROBE_FRAME_COUNT as usize);
+    for frame_index in 0..ANIMATION_PROBE_FRAME_COUNT {
+        frames.push(read_png(
+            &probe_dir.join(format!("frame-{frame_index}.png")),
+            &format!("saved animation probe frame {}", frame_index + 1),
+        )?);
+    }
+    validate_animated_frame_sequence_with_motion_region(
+        &frames,
+        ANIMATION_PROBE_FRAME_COUNT,
+        precise_animation_motion_bbox(config, state),
+    )?;
+    Ok(frames)
+}
+
+async fn generate_animation_frame_chain(
+    manifest: &GenerationRunManifest,
+    state_definition: &StateDefinition,
+    selected_key: &ChromaKey,
+    config: &ProviderConfig,
+    initial_reference: &RgbaImage,
+    mut frames: Vec<RgbaImage>,
+    start_index: u32,
+    end_index: u32,
+) -> Result<Vec<RgbaImage>, String> {
+    if frames.len() != start_index as usize || start_index > end_index {
+        return Err("invalid animation frame chain range".to_string());
+    }
+
+    let requires_wanxiang_size = config.provider == "wanxiang";
+    let flattened_reference = flatten_on_chroma_background(initial_reference, selected_key);
+    let reference = if requires_wanxiang_size {
+        ensure_wanxiang_reference_size(&flattened_reference, selected_key)
+    } else {
+        flattened_reference
+    };
+    let mut reference_dimensions = reference.dimensions();
+    let mut frame_reference_data_url = image_to_data_url(&reference)?;
+
+    for frame_index in start_index..end_index {
+        let prompt = build_animation_frame_prompt(
+            &manifest.base_prompt,
+            manifest.source_style,
+            selected_key.hex,
+            selected_key.name,
+            state_definition,
+            frame_index,
+        );
+        let canonical_motion_bbox = if frame_index == 0 {
+            None
+        } else {
+            precise_animation_motion_bbox(config, state_definition.key)
+        };
+        let motion_bbox = canonical_motion_bbox.map(|bbox| {
+            scale_animation_bbox(bbox, reference_dimensions.0, reference_dimensions.1)
+        });
+        let generated_bytes = generate_frame(
+            config,
+            &prompt,
+            &frame_reference_data_url,
+            motion_bbox,
+        )
+        .await
+        .map_err(|error| format!("generate frame {}: {error}", frame_index + 1))?;
+        let generated_frame = normalize_base_image(&generated_bytes, selected_key)
+            .map_err(|error| format!("normalize frame {}: {error}", frame_index + 1))?;
+        let frame = if let Some(motion_bbox) = canonical_motion_bbox {
+            let previous = frames.last().ok_or_else(|| {
+                format!(
+                    "missing previous animation frame before motion edit {}",
+                    frame_index + 1
+                )
+            })?;
+            preserve_motion_region_from_generated(previous, &generated_frame, motion_bbox)
+                .map_err(|error| format!("composite frame {}: {error}", frame_index + 1))?
+        } else {
+            generated_frame
+        };
+        let next_reference = flatten_on_chroma_background(&frame, selected_key);
+        let next_reference = if requires_wanxiang_size {
+            ensure_wanxiang_reference_size(&next_reference, selected_key)
+        } else {
+            next_reference
+        };
+        reference_dimensions = next_reference.dimensions();
+        frame_reference_data_url = image_to_data_url(&next_reference)?;
+        frames.push(frame);
+    }
+
+    Ok(frames)
+}
+
+fn scale_animation_bbox(bbox: [u32; 4], width: u32, height: u32) -> [u32; 4] {
+    let scale_x = |coordinate: u32| {
+        (u64::from(coordinate) * u64::from(width) / u64::from(API_FRAME_W)) as u32
+    };
+    let scale_y = |coordinate: u32| {
+        (u64::from(coordinate) * u64::from(height) / u64::from(API_FRAME_H)) as u32
+    };
+
+    [
+        scale_x(bbox[0]).min(width.saturating_sub(1)),
+        scale_y(bbox[1]).min(height.saturating_sub(1)),
+        scale_x(bbox[2]).min(width),
+        scale_y(bbox[3]).min(height),
+    ]
+}
+
+#[tauri::command]
+pub fn preview_state_prompts(
+    app: tauri::AppHandle,
+    run_id: String,
+    state: String,
+) -> Result<StatePromptPreviewResult, String> {
+    let data_dir = app_data_dir(&app)?;
+    let state_definition = validate_state_name(&state)?;
+    if state_definition.key == "idle" {
+        return Err("idle is static and does not have animation prompts".to_string());
+    }
+    let manifest = load_run_manifest(&data_dir, &run_id)?;
+    require_base_complete(&manifest)?;
+    let selected_key = chroma_key_for_manifest(&manifest)?;
+    let prompts = (0..DEFAULT_FRAME_COUNT)
+        .map(|frame_index| {
+            build_animation_frame_prompt(
+                &manifest.base_prompt,
+                manifest.source_style,
+                selected_key.hex,
+                selected_key.name,
+                state_definition,
+                frame_index,
+            )
+        })
+        .collect();
+
+    Ok(StatePromptPreviewResult {
+        run_id,
+        state,
+        frame_count: DEFAULT_FRAME_COUNT,
+        prompts,
+    })
+}
+
+#[tauri::command]
+pub async fn generate_state_probe(
+    app: tauri::AppHandle,
+    run_id: String,
+    state: String,
+    image_provider: String,
+    image_api_key: Option<String>,
+    reference_model: Option<String>,
+    local_sd_url: Option<String>,
+    denoising_strength: Option<f32>,
+) -> Result<StateProbeResult, String> {
+    let data_dir = app_data_dir(&app)?;
+    let state_definition = validate_state_name(&state)?;
+    if state_definition.key == "idle" {
+        return Err("idle is static and does not need an animation probe".to_string());
+    }
+    let provider = provider_name(&image_provider)?;
+    let manifest = load_run_manifest(&data_dir, &run_id)?;
+    require_base_complete(&manifest)?;
+    let selected_key = chroma_key_for_manifest(&manifest)?;
+    let base_path = run_dir(&data_dir, &run_id)?.join("base.png");
+    let base = read_png(&base_path, "canonical base image")?;
+    if base.dimensions() != (API_FRAME_W, API_FRAME_H) {
+        return Err("canonical base image has invalid dimensions".to_string());
+    }
+    let config = provider_config(
+        provider,
+        image_api_key.clone(),
+        None,
+        reference_model,
+        local_sd_url,
+        denoising_strength,
+    );
+    let frames = match generate_animation_frame_chain(
+        &manifest,
+        state_definition,
+        &selected_key,
+        &config,
+        &base,
+        Vec::new(),
+        0,
+        ANIMATION_PROBE_FRAME_COUNT,
+    )
+    .await
+    {
+        Ok(frames) => frames,
+        Err(error) => return Err(bounded_run_error(&error, image_api_key.as_deref())),
+    };
+    let validation = match validate_animated_frame_sequence_with_motion_region(
+        &frames,
+        ANIMATION_PROBE_FRAME_COUNT,
+        precise_animation_motion_bbox(&config, &state),
+    ) {
+        Ok(validation) => validation,
+        Err(error) => return Err(bounded_run_error(&error, image_api_key.as_deref())),
+    };
+    if let Err(error) = save_animation_probe(
+        &data_dir,
+        &run_id,
+        &state,
+        &manifest,
+        &selected_key,
+        &config,
+        &frames,
+    ) {
+        return Err(bounded_run_error(&error, image_api_key.as_deref()));
+    }
+    let row = match assemble_animation_frames_with_count(&frames, ANIMATION_PROBE_FRAME_COUNT) {
+        Ok(row) => row,
+        Err(error) => return Err(bounded_run_error(&error, image_api_key.as_deref())),
+    };
+
+    Ok(StateProbeResult {
+        run_id,
+        state,
+        data_url: image_to_data_url(&row)?,
+        frame_w: FRAME_W,
+        frame_h: FRAME_H,
+        frame_count: ANIMATION_PROBE_FRAME_COUNT,
+        validation,
     })
 }
 
@@ -1168,6 +1484,7 @@ pub async fn generate_state_row(
     reference_model: Option<String>,
     local_sd_url: Option<String>,
     denoising_strength: Option<f32>,
+    reuse_probe: Option<bool>,
 ) -> Result<StateRowResult, String> {
     let data_dir = app_data_dir(&app)?;
     let state_definition = validate_state_name(&state)?;
@@ -1199,20 +1516,6 @@ pub async fn generate_state_row(
         )?
     } else {
         let provider = provider.expect("animated states require an image provider");
-        let row_reference = build_row_reference(&base);
-        let row_reference_sized = if provider == "wanxiang" {
-            ensure_wanxiang_reference_size(&row_reference, &selected_key)
-        } else {
-            row_reference
-        };
-        let row_reference_data_url = image_to_data_url(&row_reference_sized)?;
-        let prompt = build_row_prompt(
-            &manifest.base_prompt,
-            manifest.source_style,
-            selected_key.hex,
-            selected_key.name,
-            state_definition,
-        );
         let config = provider_config(
             provider,
             image_api_key.clone(),
@@ -1221,12 +1524,96 @@ pub async fn generate_state_row(
             local_sd_url,
             denoising_strength,
         );
-        finish_state_result_at(
+        let use_probe = reuse_probe.unwrap_or(false);
+        let (frames, start_index) = if use_probe {
+            let frames = match load_animation_probe(
+                &data_dir,
+                &run_id,
+                &state,
+                &manifest,
+                &selected_key,
+                &config,
+            ) {
+                Ok(frames) => frames,
+                Err(error) => {
+                    return Err(mark_command_failed(
+                        &data_dir,
+                        &run_id,
+                        &state,
+                        &format!("load animation probe: {error}"),
+                        image_api_key.as_deref(),
+                    ));
+                }
+            };
+            let start_index = frames.len() as u32;
+            (frames, start_index)
+        } else {
+            (Vec::with_capacity(DEFAULT_FRAME_COUNT as usize), 0)
+        };
+        let initial_reference = frames.last().cloned().unwrap_or_else(|| base.clone());
+        let frames = match generate_animation_frame_chain(
+            &manifest,
+            state_definition,
+            &selected_key,
+            &config,
+            &initial_reference,
+            frames,
+            start_index,
+            DEFAULT_FRAME_COUNT,
+        )
+        .await
+        {
+            Ok(frames) => frames,
+            Err(error) => {
+                return Err(mark_command_failed(
+                    &data_dir,
+                    &run_id,
+                    &state,
+                    &error,
+                    image_api_key.as_deref(),
+                ));
+            }
+        };
+        if let Err(error) = validate_animated_frame_sequence_with_motion_region(
+            &frames,
+            DEFAULT_FRAME_COUNT,
+            precise_animation_motion_bbox(&config, &state),
+        ) {
+            return Err(mark_command_failed(
+                &data_dir,
+                &run_id,
+                &state,
+                &error,
+                image_api_key.as_deref(),
+            ));
+        }
+
+        let row = match assemble_animation_frames(&frames) {
+            Ok(row) => row,
+            Err(error) => {
+                return Err(mark_command_failed(
+                    &data_dir,
+                    &run_id,
+                    &state,
+                    &error,
+                    image_api_key.as_deref(),
+                ));
+            }
+        };
+        if let Err(error) = validate_animated_sprite_row(&row) {
+            return Err(mark_command_failed(
+                &data_dir,
+                &run_id,
+                &state,
+                &error,
+                image_api_key.as_deref(),
+            ));
+        }
+        finish_normalized_state_row_at(
             &data_dir,
             &run_id,
             &state,
-            &selected_key,
-            generate_row(&config, &prompt, &row_reference_data_url).await,
+            row,
             image_api_key.as_deref(),
         )?
     };
@@ -1530,7 +1917,8 @@ mod command_tests {
     };
     use super::{
         assemble_preview_rows, assemble_run_preview_at, chroma_key_for_manifest,
-        finish_base_result_at, finish_state_result_at, generation_progress_payload,
+        finish_base_result_at, generation_progress_payload,
+        mark_command_failed,
         require_base_complete, require_preview_ready, stage_frame_selections_at,
         validate_state_name, FrameCell,
     };
@@ -1766,15 +2154,7 @@ mod command_tests {
         super::mark_state_complete(temp.path(), "run-1", "idle").unwrap();
         super::mark_state_generating(temp.path(), "run-1", "sleeping").unwrap();
 
-        finish_state_result_at(
-            temp.path(),
-            "run-1",
-            "sleeping",
-            &CHROMA_KEY_CANDIDATES[0],
-            Err("sleeping provider failed".to_string()),
-            None,
-        )
-        .unwrap_err();
+        mark_command_failed(temp.path(), "run-1", "sleeping", "sleeping provider failed", None);
 
         let manifest = super::load_manifest(temp.path(), "run-1").unwrap();
         assert_eq!(manifest.states["idle"].status, ArtifactStatus::Complete);
@@ -1801,12 +2181,16 @@ mod command_tests {
         let selected_key =
             chroma_key_for_manifest(&super::load_manifest(temp.path(), "run-1").unwrap()).unwrap();
 
-        let row = finish_state_result_at(
+        let normalized = super::sprite::normalize_horizontal_row(
+            &png_bytes(&keyed_row(selected_key)),
+            &selected_key,
+        )
+        .unwrap();
+        let row = super::finish_normalized_state_row_at(
             temp.path(),
             "run-1",
             "idle",
-            &selected_key,
-            Ok(png_bytes(&keyed_row(selected_key))),
+            normalized,
             None,
         )
         .unwrap();
