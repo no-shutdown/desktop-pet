@@ -236,6 +236,62 @@ const MAX_COMPONENT_SIZE: usize = 4096;
 const MAX_KEY_GAP_SIZE: usize = 16;
 const MAX_KEY_GAP_WIDTH: u32 = 2;
 const MAX_KEY_GAP_HEIGHT: u32 = 2;
+const MAX_BACKGROUND_DECORATION_COMPONENT_SIZE: usize = 4096;
+const BACKGROUND_DECORATION_SIZE_RATIO: usize = 8;
+const KEY_HUE_TOLERANCE_DEGREES: f32 = 28.0;
+const MIN_KEY_LIKE_CHROMA: f32 = 40.0;
+const MIN_KEY_LIKE_VALUE: f32 = 0.12;
+
+fn rgb_hue_degrees(color: [u8; 3]) -> Option<f32> {
+    let red = f32::from(color[0]) / 255.0;
+    let green = f32::from(color[1]) / 255.0;
+    let blue = f32::from(color[2]) / 255.0;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let chroma = max - min;
+
+    if chroma <= f32::EPSILON {
+        return None;
+    }
+
+    let hue = if max == red {
+        60.0 * ((green - blue) / chroma).rem_euclid(6.0)
+    } else if max == green {
+        60.0 * (((blue - red) / chroma) + 2.0)
+    } else {
+        60.0 * (((red - green) / chroma) + 4.0)
+    };
+
+    Some(hue.rem_euclid(360.0))
+}
+
+fn is_key_color_like(pixel: &Rgba<u8>, key: &ChromaKey, key_hue: f32) -> bool {
+    if pixel[3] == 0 {
+        return false;
+    }
+
+    let rgb = [pixel[0], pixel[1], pixel[2]];
+    let distance = (squared_rgb_distance(rgb, key.rgb) as f32).sqrt();
+    if distance <= KEY_RAMP_END {
+        return true;
+    }
+
+    let max = f32::from(pixel[0].max(pixel[1]).max(pixel[2])) / 255.0;
+    let min = f32::from(pixel[0].min(pixel[1]).min(pixel[2])) / 255.0;
+    let chroma = max - min;
+    if max < MIN_KEY_LIKE_VALUE || chroma * 255.0 < MIN_KEY_LIKE_CHROMA {
+        return false;
+    }
+
+    let saturation = chroma / max;
+    let Some(pixel_hue) = rgb_hue_degrees(rgb) else {
+        return false;
+    };
+    let hue_distance = (pixel_hue - key_hue)
+        .abs()
+        .min(360.0 - (pixel_hue - key_hue).abs());
+    saturation >= 0.45 && hue_distance <= KEY_HUE_TOLERANCE_DEGREES
+}
 
 fn background_kind(
     pixel: &Rgba<u8>,
@@ -421,6 +477,8 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
     }
 
     remove_interior_background_holes(image, key, actual_bg, &mut states);
+    remove_exposed_key_color_regions(image, key);
+    remove_small_background_decoration_islands(image);
 
     for pixel in image.pixels_mut() {
         if pixel[3] == 0 {
@@ -563,6 +621,202 @@ fn remove_interior_background_holes(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Removes noisy variants of the configured chroma-key colour when they are
+/// exposed to transparency or the frame edge. Image providers can turn a
+/// solid key canvas into a textured, off-hue magenta/blue background whose
+/// pixels are too far away for the exact RGB distance check above. Restricting
+/// this cleanup to exposed colour regions keeps intentionally key-coloured
+/// details inside the character intact.
+fn remove_exposed_key_color_regions(image: &mut RgbaImage, key: &ChromaKey) {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let Some(key_hue) = rgb_hue_degrees(key.rgb) else {
+        return;
+    };
+    let mut visited = vec![false; (width * height) as usize];
+    let mut exposed_regions = Vec::new();
+
+    for y in 0..height {
+        for x in 0..width {
+            let start_idx = (y * width + x) as usize;
+            if visited[start_idx]
+                || !is_key_color_like(image.get_pixel(x, y), key, key_hue)
+            {
+                continue;
+            }
+
+            let mut region = Vec::new();
+            let mut queue = VecDeque::new();
+            let mut touches_exposure = x == 0
+                || y == 0
+                || x == width - 1
+                || y == height - 1;
+            visited[start_idx] = true;
+            region.push((x, y));
+            queue.push_back((x, y));
+
+            while let Some((current_x, current_y)) = queue.pop_front() {
+                for_each_neighbor(
+                    current_x,
+                    current_y,
+                    width,
+                    height,
+                    |neighbor_x, neighbor_y| {
+                        let neighbor_pixel = image.get_pixel(neighbor_x, neighbor_y);
+                        if neighbor_pixel[3] == 0 {
+                            touches_exposure = true;
+                            return;
+                        }
+
+                        let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                        if visited[neighbor_idx]
+                            || !is_key_color_like(neighbor_pixel, key, key_hue)
+                        {
+                            return;
+                        }
+
+                        visited[neighbor_idx] = true;
+                        touches_exposure |= neighbor_x == 0
+                            || neighbor_y == 0
+                            || neighbor_x == width - 1
+                            || neighbor_y == height - 1;
+                        region.push((neighbor_x, neighbor_y));
+                        queue.push_back((neighbor_x, neighbor_y));
+                    },
+                );
+            }
+
+            if touches_exposure {
+                exposed_regions.push(region);
+            }
+        }
+    }
+
+    for region in exposed_regions {
+        for (x, y) in region {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+        }
+    }
+}
+
+struct OpaqueComponent {
+    size: usize,
+    touches_edge: bool,
+    touches_transparent: bool,
+    pixels: Option<Vec<(u32, u32)>>,
+}
+
+/// AI image providers sometimes decorate a chroma canvas with off-colour
+/// snowflakes, sparkles, or other small motifs. Once the real background has
+/// been removed, each motif is an isolated opaque island in the transparent
+/// background and would otherwise be mistaken for character detail.
+///
+/// Remove only small, edge-exposed islands that are much smaller than the
+/// largest remaining opaque component. Character details remain connected to
+/// the subject, while large enclosed regions are protected by the size cap and
+/// the relative-size check.
+fn remove_small_background_decoration_islands(image: &mut RgbaImage) {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let mut visited = vec![false; (width * height) as usize];
+    let mut components = Vec::new();
+
+    for y in 0..height {
+        for x in 0..width {
+            let start_idx = (y * width + x) as usize;
+            if visited[start_idx] || image.get_pixel(x, y)[3] == 0 {
+                continue;
+            }
+
+            let mut component = OpaqueComponent {
+                size: 1,
+                touches_edge: x == 0 || y == 0 || x == width - 1 || y == height - 1,
+                touches_transparent: false,
+                pixels: Some(vec![(x, y)]),
+            };
+            let mut queue = VecDeque::new();
+            visited[start_idx] = true;
+            queue.push_back((x, y));
+
+            while let Some((current_x, current_y)) = queue.pop_front() {
+                for_each_neighbor(
+                    current_x,
+                    current_y,
+                    width,
+                    height,
+                    |neighbor_x, neighbor_y| {
+                        let neighbor_pixel = image.get_pixel(neighbor_x, neighbor_y);
+                        if neighbor_pixel[3] == 0 {
+                            component.touches_transparent = true;
+                            return;
+                        }
+
+                        let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                        if visited[neighbor_idx] {
+                            return;
+                        }
+
+                        visited[neighbor_idx] = true;
+                        component.size = component.size.saturating_add(1);
+                        component.touches_edge |= neighbor_x == 0
+                            || neighbor_y == 0
+                            || neighbor_x == width - 1
+                            || neighbor_y == height - 1;
+                        if let Some(pixels) = component.pixels.as_mut() {
+                            if pixels.len() < MAX_BACKGROUND_DECORATION_COMPONENT_SIZE {
+                                pixels.push((neighbor_x, neighbor_y));
+                            } else {
+                                component.pixels = None;
+                            }
+                        }
+                        queue.push_back((neighbor_x, neighbor_y));
+                    },
+                );
+            }
+
+            components.push(component);
+        }
+    }
+
+    let largest_component_size = components
+        .iter()
+        .map(|component| component.size)
+        .max()
+        .unwrap_or(0);
+    if largest_component_size == 0 {
+        return;
+    }
+
+    for component in components {
+        let Some(pixels) = component.pixels else {
+            continue;
+        };
+        let is_small_relative_to_subject = component
+            .size
+            .saturating_mul(BACKGROUND_DECORATION_SIZE_RATIO)
+            <= largest_component_size;
+        if component.touches_edge
+            || !component.touches_transparent
+            || component.size > MAX_BACKGROUND_DECORATION_COMPONENT_SIZE
+            || !is_small_relative_to_subject
+        {
+            continue;
+        }
+
+        for (x, y) in pixels {
+            image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
         }
     }
 }
@@ -2359,4 +2613,86 @@ mod tests {
         assert_eq!(image.get_pixel(80, 80).0, background.0);
         assert_eq!(image.get_pixel(152, 152).0, [0, 0, 0, 0]);
     }
+
+    #[test]
+    fn removes_an_off_color_snowflake_decoration_from_a_blue_background() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let background = Rgba([24, 96, 220, 255]);
+        let character = Rgba([220, 80, 80, 255]);
+        let snowflake = Rgba([240, 248, 255, 255]);
+        let mut image = RgbaImage::from_pixel(64, 64, background);
+
+        for y in 16..52 {
+            for x in 24..40 {
+                image.put_pixel(x, y, character);
+            }
+        }
+        for &(x, y) in &[
+            (8, 8),
+            (9, 8),
+            (10, 8),
+            (8, 9),
+            (9, 9),
+            (10, 9),
+            (8, 10),
+            (9, 10),
+            (10, 10),
+            (7, 9),
+            (11, 9),
+            (9, 7),
+            (9, 11),
+        ] {
+            image.put_pixel(x, y, snowflake);
+        }
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(32, 32).0, character.0);
+        for &(x, y) in &[
+            (8, 8),
+            (9, 8),
+            (10, 8),
+            (8, 9),
+            (9, 9),
+            (10, 9),
+            (8, 10),
+            (9, 10),
+            (10, 10),
+            (7, 9),
+            (11, 9),
+            (9, 7),
+            (9, 11),
+        ] {
+            assert_eq!(
+                image.get_pixel(x, y).0,
+                [0, 0, 0, 0],
+                "background decoration pixel at ({x},{y}) should be removed"
+            );
+        }
+    }
+
+    #[test]
+    fn removes_noisy_key_colored_background_beyond_the_rgb_threshold() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let noisy_background = Rgba([140, 20, 135, 255]);
+        let character = Rgba([40, 40, 40, 255]);
+        let mut image = RgbaImage::from_pixel(64, 64, Rgba([key.rgb[0], key.rgb[1], key.rgb[2], 255]));
+
+        for y in 4..60 {
+            for x in 4..60 {
+                image.put_pixel(x, y, noisy_background);
+            }
+        }
+        for y in 16..52 {
+            for x in 24..40 {
+                image.put_pixel(x, y, character);
+            }
+        }
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(10, 10).0, [0, 0, 0, 0]);
+        assert_eq!(image.get_pixel(32, 32).0, character.0);
+    }
+
 }
