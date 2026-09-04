@@ -35,10 +35,10 @@ use self::run::{
     mark_state_complete as complete_state, mark_state_generating as begin_state,
 };
 use self::sprite::{
-    assemble_animation_frames, assemble_rows, build_static_sprite_row, choose_chroma_key,
-    chroma_key_from_hex, ensure_wanxiang_reference_size, flatten_on_chroma_background,
-    assemble_animation_frames_with_count, image_to_data_url, normalize_base_image,
-    preserve_motion_region_from_generated,
+    assemble_animation_frames, assemble_animation_frames_with_count, assemble_rows,
+    build_static_sprite_row, choose_chroma_key, chroma_key_from_hex,
+    ensure_wanxiang_reference_size, flatten_on_chroma_background, image_to_data_url,
+    normalize_base_image, preserve_motion_region_from_generated, stabilize_motion_region_colors,
     validate_animated_frame_sequence_with_motion_region, validate_animated_sprite_row,
     validate_sprite_row, ChromaKey,
 };
@@ -1085,7 +1085,7 @@ fn load_animation_probe(
     validate_animated_frame_sequence_with_motion_region(
         &frames,
         ANIMATION_PROBE_FRAME_COUNT,
-        precise_animation_motion_bbox(config, state),
+        animation_motion_bbox(state),
     )?;
     Ok(frames)
 }
@@ -1104,14 +1104,23 @@ async fn generate_animation_frame_chain(
         return Err("invalid animation frame chain range".to_string());
     }
 
+    // Keep one immutable action-frame anchor for the entire sequence. Feeding
+    // every generated frame back into the model compounds small hue, lighting,
+    // geometry, and object-inventory changes until they become visible drift.
+    // The app-side motion compositing below is provider-independent, so only
+    // the state-specific motion region can replace anchor pixels.
+    let mut anchor_frame = frames.first().cloned();
     let requires_wanxiang_size = config.provider == "wanxiang";
-    let flattened_reference = flatten_on_chroma_background(initial_reference, selected_key);
+    let flattened_reference = flatten_on_chroma_background(
+        anchor_frame.as_ref().unwrap_or(initial_reference),
+        selected_key,
+    );
     let reference = if requires_wanxiang_size {
         ensure_wanxiang_reference_size(&flattened_reference, selected_key)
     } else {
         flattened_reference
     };
-    let mut reference_dimensions = reference.dimensions();
+    let reference_dimensions = reference.dimensions();
     let mut frame_reference_data_url = image_to_data_url(&reference)?;
 
     for frame_index in start_index..end_index {
@@ -1126,41 +1135,47 @@ async fn generate_animation_frame_chain(
         let canonical_motion_bbox = if frame_index == 0 {
             None
         } else {
-            precise_animation_motion_bbox(config, state_definition.key)
+            animation_motion_bbox(state_definition.key)
         };
-        let motion_bbox = canonical_motion_bbox.map(|bbox| {
+        // Only Wan 2.7 supports a provider-side bbox. All providers still use
+        // the canonical bbox for local compositing in the application.
+        let provider_motion_bbox = canonical_motion_bbox
+            .filter(|_| precise_animation_motion_bbox(config, state_definition.key).is_some());
+        let motion_bbox = provider_motion_bbox.map(|bbox| {
             scale_animation_bbox(bbox, reference_dimensions.0, reference_dimensions.1)
         });
-        let generated_bytes = generate_frame(
-            config,
-            &prompt,
-            &frame_reference_data_url,
-            motion_bbox,
-        )
-        .await
-        .map_err(|error| format!("generate frame {}: {error}", frame_index + 1))?;
+        let generated_bytes =
+            generate_frame(config, &prompt, &frame_reference_data_url, motion_bbox)
+                .await
+                .map_err(|error| format!("generate frame {}: {error}", frame_index + 1))?;
         let generated_frame = normalize_base_image(&generated_bytes, selected_key)
             .map_err(|error| format!("normalize frame {}: {error}", frame_index + 1))?;
         let frame = if let Some(motion_bbox) = canonical_motion_bbox {
-            let previous = frames.last().ok_or_else(|| {
+            let anchor = anchor_frame.as_ref().ok_or_else(|| {
                 format!(
-                    "missing previous animation frame before motion edit {}",
+                    "missing stable animation anchor before motion edit {}",
                     frame_index + 1
                 )
             })?;
-            preserve_motion_region_from_generated(previous, &generated_frame, motion_bbox)
+            let stabilized_frame =
+                stabilize_motion_region_colors(anchor, &generated_frame, motion_bbox);
+            preserve_motion_region_from_generated(anchor, &stabilized_frame, motion_bbox)
                 .map_err(|error| format!("composite frame {}: {error}", frame_index + 1))?
         } else {
             generated_frame
         };
-        let next_reference = flatten_on_chroma_background(&frame, selected_key);
-        let next_reference = if requires_wanxiang_size {
-            ensure_wanxiang_reference_size(&next_reference, selected_key)
-        } else {
-            next_reference
-        };
-        reference_dimensions = next_reference.dimensions();
-        frame_reference_data_url = image_to_data_url(&next_reference)?;
+        if anchor_frame.is_none() {
+            // Frame 1 establishes the stable action scene. Later requests use
+            // it instead of chaining through every edited result.
+            anchor_frame = Some(frame.clone());
+            let next_reference = flatten_on_chroma_background(&frame, selected_key);
+            let next_reference = if requires_wanxiang_size {
+                ensure_wanxiang_reference_size(&next_reference, selected_key)
+            } else {
+                next_reference
+            };
+            frame_reference_data_url = image_to_data_url(&next_reference)?;
+        }
         frames.push(frame);
     }
 
@@ -1269,7 +1284,7 @@ pub async fn generate_state_probe(
     let validation = match validate_animated_frame_sequence_with_motion_region(
         &frames,
         ANIMATION_PROBE_FRAME_COUNT,
-        precise_animation_motion_bbox(&config, &state),
+        animation_motion_bbox(&state),
     ) {
         Ok(validation) => validation,
         Err(error) => return Err(bounded_run_error(&error, image_api_key.as_deref())),
@@ -1577,7 +1592,7 @@ pub async fn generate_state_row(
         if let Err(error) = validate_animated_frame_sequence_with_motion_region(
             &frames,
             DEFAULT_FRAME_COUNT,
-            precise_animation_motion_bbox(&config, &state),
+            animation_motion_bbox(&state),
         ) {
             return Err(mark_command_failed(
                 &data_dir,

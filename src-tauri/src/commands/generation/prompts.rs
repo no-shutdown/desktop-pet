@@ -9,6 +9,7 @@ const STATIC_FRAME_CONTRACT: &str = "STATIC FRAME CONTRACT: all 8 columns are st
 const ANIMATED_FRAME_CONTRACT: &str = "ANIMATED FRAME CONTRACT: the 8 columns MUST show 8 visibly DIFFERENT frames of the same continuous motion; each column is a distinct moment, frame 1 loops smoothly back to frame 8, and neighbouring columns change only by a small continuous increment.";
 const STATIC_REFERENCE_CONTRACT: &str = "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size; keep every column as a stable copy of that same static pose and do not replace it with a different motion frame.";
 const ANIMATED_REFERENCE_CONTRACT: &str = "The attached reference sheet shows 8 tiled copies of the base pose ONLY to establish character identity and canvas size; REPLACE each column with a distinct animation frame and do not preserve the reference pose in any column.";
+const STABLE_ANIMATION_ANCHOR_CONTRACT: &str = "STABLE ANIMATION ANCHOR: the attached image is the first established action frame and the immutable scene anchor for this sequence, not a loose style reference. Derive this phase from that same anchor on every request; perform an in-place micro-edit only in the requested motion region; keep all unaffected pixels and geometry visually identical; never accumulate a previous frame's color grade, tint, lighting, texture, geometry, or accidental artifact.";
 const REALISTIC_BASE_STYLE_CONTRACT: &str = "SOURCE STYLE CONTRACT: convert the realistic human photo into a cute 2D chibi character in a clean flat illustration style with rounded proportions, simplified shapes, and a charming approachable expression. No photorealistic rendering, no 3D render, no CGI, no realistic skin pores, no plastic materials, and no cinematic lighting.";
 const STYLIZED_BASE_STYLE_CONTRACT: &str = "SOURCE STYLE CONTRACT: preserve the original art style and source medium of the reference artwork. Preserve its line quality, proportions, palette, shading, and texture, including its existing cartoon, anime, illustration, or pixel art treatment. Do not restyle, re-render, or convert the artwork into a different medium; no 3D or CGI restyling.";
 const REALISTIC_ROW_STYLE_CONTRACT: &str = "ROW STYLE CONTRACT: the canonical base image is already a cute 2D chibi character in a clean flat illustration style derived from the source. Preserve that established cute 2D chibi/flat illustration style, composition, orientation, rounded proportions, simplified shapes, palette, shading, line quality, and front-facing camera relationship across every frame; change only the requested state motion. Do not reinterpret the canonical base as a realistic image; no photorealistic rendering, no 3D render, no CGI, no realistic skin pores, no plastic materials, and no cinematic lighting.";
@@ -121,12 +122,12 @@ pub fn build_animation_frame_prompt(
     let reference_contract = if safe_frame_index == 0 {
         "REFERENCE ROLE: the attached image is the canonical character reference. Create the first action pose and establish the exact character scale, position, furniture geometry, prop geometry, and camera composition that every later frame must inherit."
     } else {
-        "PREVIOUS-FRAME CONTINUITY LOCK: the attached image is the immediately previous animation frame, not a loose style reference. Preserve its exact character identity, face, hair, clothing, proportions, linework, colors, lighting, scale, baseline, camera, crop, furniture, props, and background. Perform an in-place micro-edit: change ONLY the smallest local body region required by the current frame phase. Keep all unaffected pixels and geometry visually identical. Do not redraw, redesign, reinterpret, replace, resize, recenter, zoom, rotate, mirror, or restyle the scene."
+        STABLE_ANIMATION_ANCHOR_CONTRACT
     };
     let edit_scope = if safe_frame_index == 0 {
         ""
     } else {
-        "PIXEL-PRESERVATION EDIT SCOPE: change only the requested motion region; outside that region preserve the attached canvas pixel-for-pixel, including the chroma background, furniture, props, ground line, camera, and character lower body. Do not regenerate, recenter, or recompose the whole canvas. OBJECT INVENTORY LOCK: keep exactly the same objects as the attached frame. Never add, remove, reveal, hide, uncover, replace, or introduce any character, prop, furniture, accessory, screen, or device. If an item is absent in the attached frame, keep it absent forever."
+        "PIXEL-PRESERVATION EDIT SCOPE: change only the requested motion region; outside that region preserve the attached canvas pixel-for-pixel, including the chroma background, furniture, props, ground line, camera, and character lower body. Do not regenerate, recenter, or recompose the whole canvas. COLOR STABILITY LOCK: do not change hue, brightness, contrast, saturation, palette, shading, or line color outside the requested motion. OBJECT INVENTORY LOCK: keep exactly the same objects as the attached frame. Never add, remove, reveal, hide, uncover, replace, or introduce any character, prop, furniture, accessory, screen, or device. If an item is absent in the attached frame, keep it absent forever."
     };
     let working_inventory_lock = if state.key == "working" {
         "WORKING INVENTORY LOCK: frame 1 establishes the complete object inventory. It must contain exactly one open laptop with the same upright display, bezel, hinge, keyboard deck, desk, and chair; every later frame must contain those same objects in the same positions. Never reveal the laptop screen later, and never make the laptop, desk, or chair appear, disappear, or transform."
@@ -136,7 +137,7 @@ pub fn build_animation_frame_prompt(
     let motion_contract = if safe_frame_index == 0 {
         "Establish the sequence's stable action scene in this first frame; later frames will make only incremental local edits to it."
     } else {
-        "The difference from the attached previous frame must be small, local, and continuous; preserve the established scene and move only the specified body parts by one incremental step. Never jump directly to an unrelated pose."
+        "The difference from the stable animation anchor must be small, local, and continuous; preserve the established scene and move only the specified body parts by one incremental step. Never jump directly to an unrelated pose or accumulate a global color shift."
     };
 
     format!(
@@ -154,9 +155,9 @@ pub fn build_animation_frame_prompt(
 /// precise-edit constraint for every frame after the first scene frame.
 pub fn animation_motion_bbox(state_key: &str) -> Option<[u32; 4]> {
     match state_key {
-        "sleeping" => Some([32, 32, 224, 184]),
-        "acting_cute" => Some([32, 48, 224, 192]),
-        "working" => Some([48, 176, 136, 224]),
+        "sleeping" => Some([64, 96, 192, 184]),
+        "acting_cute" => Some([48, 104, 208, 200]),
+        "working" => Some([64, 144, 208, 216]),
         _ => None,
     }
 }
@@ -672,13 +673,15 @@ mod tests {
         assert!(second.contains("left fingers visibly press"));
         assert!(first.contains("attached image is the canonical character reference"));
         assert!(first.contains("establish the sequence's stable action scene"));
-        assert!(second.contains("previous-frame continuity lock"));
-        assert!(second.contains("immediately previous animation frame"));
+        assert!(second.contains("stable animation anchor"));
+        assert!(second.contains("immutable scene anchor"));
+        assert!(second.contains("never accumulate"));
         assert!(second.contains("in-place micro-edit"));
         assert!(second.contains("pixel-preservation edit scope"));
         assert!(second.contains("pixel-for-pixel"));
+        assert!(second.contains("color stability lock"));
         assert!(second.contains("keep all unaffected pixels and geometry visually identical"));
-        assert!(second.contains("difference from the attached previous frame must be small"));
+        assert!(second.contains("difference from the stable animation anchor must be small"));
         assert!(first.contains("do not draw a sprite sheet"));
         assert!(first.contains("256x256"));
         assert!(first.contains("facing direction lock"));
@@ -743,9 +746,9 @@ mod tests {
 
     #[test]
     fn animation_motion_bboxes_cover_only_the_allowed_body_region() {
-        assert_eq!(animation_motion_bbox("sleeping"), Some([32, 32, 224, 184]));
-        assert_eq!(animation_motion_bbox("acting_cute"), Some([32, 48, 224, 192]));
-        assert_eq!(animation_motion_bbox("working"), Some([48, 176, 136, 224]));
+        assert_eq!(animation_motion_bbox("sleeping"), Some([64, 96, 192, 184]));
+        assert_eq!(animation_motion_bbox("acting_cute"), Some([48, 104, 208, 200]));
+        assert_eq!(animation_motion_bbox("working"), Some([64, 144, 208, 216]));
         assert_eq!(animation_motion_bbox("idle"), None);
     }
 }

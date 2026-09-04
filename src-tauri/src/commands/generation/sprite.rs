@@ -241,6 +241,8 @@ const BACKGROUND_DECORATION_SIZE_RATIO: usize = 8;
 const KEY_HUE_TOLERANCE_DEGREES: f32 = 28.0;
 const MIN_KEY_LIKE_CHROMA: f32 = 40.0;
 const MIN_KEY_LIKE_VALUE: f32 = 0.12;
+const MAX_ALTERNATE_CHROMA_COMPONENT_SIZE: usize = 64;
+const ALTERNATE_CHROMA_SIZE_RATIO: usize = 16;
 
 fn rgb_hue_degrees(color: [u8; 3]) -> Option<f32> {
     let red = f32::from(color[0]) / 255.0;
@@ -285,6 +287,37 @@ fn is_key_color_like(pixel: &Rgba<u8>, key: &ChromaKey, key_hue: f32) -> bool {
 
     let saturation = chroma / max;
     let Some(pixel_hue) = rgb_hue_degrees(rgb) else {
+        return false;
+    };
+    let hue_distance = (pixel_hue - key_hue)
+        .abs()
+        .min(360.0 - (pixel_hue - key_hue).abs());
+    saturation >= 0.45 && hue_distance <= KEY_HUE_TOLERANCE_DEGREES
+}
+
+fn is_alternate_chroma_like(pixel: &Rgba<u8>, key: &ChromaKey, key_hue: f32) -> bool {
+    if is_key_color_like(pixel, key, key_hue) {
+        return true;
+    }
+    if pixel[3] == 0 {
+        return false;
+    }
+
+    // Anti-aliased edges of a stray chroma marker can be darkened by the
+    // transparent canvas, so include a low-value but still strongly saturated
+    // fringe when it is connected to the marker core.
+    let red = f32::from(pixel[0]) / 255.0;
+    let green = f32::from(pixel[1]) / 255.0;
+    let blue = f32::from(pixel[2]) / 255.0;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let chroma = max - min;
+    if max < MIN_KEY_LIKE_VALUE * 0.5 || chroma <= f32::EPSILON {
+        return false;
+    }
+
+    let saturation = chroma / max;
+    let Some(pixel_hue) = rgb_hue_degrees([pixel[0], pixel[1], pixel[2]]) else {
         return false;
     };
     let hue_distance = (pixel_hue - key_hue)
@@ -478,6 +511,7 @@ pub fn remove_chroma_background(image: &mut RgbaImage, key: &ChromaKey) {
 
     remove_interior_background_holes(image, key, actual_bg, &mut states);
     remove_exposed_key_color_regions(image, key);
+    remove_small_exposed_alternate_chroma_islands(image, key);
     remove_small_background_decoration_islands(image);
 
     for pixel in image.pixels_mut() {
@@ -703,6 +737,120 @@ fn remove_exposed_key_color_regions(image: &mut RgbaImage, key: &ChromaKey) {
     for region in exposed_regions {
         for (x, y) in region {
             image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+        }
+    }
+}
+
+/// Removes tiny, highly saturated islands of a *different* pure chroma colour
+/// when they are exposed to transparency. Providers occasionally ignore the
+/// requested key and leave a small green/blue/magenta marker attached to the
+/// subject; the normal sampled-background flood fill cannot remove a marker
+/// that touches the character. The small-size and relative-size guards avoid
+/// treating a real coloured clothing/accessory region as background.
+fn remove_small_exposed_alternate_chroma_islands(
+    image: &mut RgbaImage,
+    selected_key: &ChromaKey,
+) {
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let opaque_pixel_count = image.pixels().filter(|pixel| pixel[3] > 0).count();
+    if opaque_pixel_count == 0 {
+        return;
+    }
+
+    for candidate in CHROMA_KEY_CANDIDATES {
+        if candidate == *selected_key {
+            continue;
+        }
+
+        let Some(candidate_hue) = rgb_hue_degrees(candidate.rgb) else {
+            continue;
+        };
+        let mut visited = vec![false; (width * height) as usize];
+        let mut exposed_regions = Vec::new();
+
+        for y in 0..height {
+            for x in 0..width {
+                let start_idx = (y * width + x) as usize;
+                if visited[start_idx]
+                    || !is_alternate_chroma_like(
+                        image.get_pixel(x, y),
+                        &candidate,
+                        candidate_hue,
+                    )
+                {
+                    continue;
+                }
+
+                let mut region = Vec::new();
+                let mut queue = VecDeque::new();
+                let mut touches_transparency = false;
+                let mut touches_edge = x == 0
+                    || y == 0
+                    || x == width - 1
+                    || y == height - 1;
+                visited[start_idx] = true;
+                region.push((x, y));
+                queue.push_back((x, y));
+
+                while let Some((current_x, current_y)) = queue.pop_front() {
+                    for_each_neighbor(
+                        current_x,
+                        current_y,
+                        width,
+                        height,
+                        |neighbor_x, neighbor_y| {
+                            let neighbor_pixel = image.get_pixel(neighbor_x, neighbor_y);
+                            if neighbor_pixel[3] == 0 {
+                                touches_transparency = true;
+                                return;
+                            }
+
+                            let neighbor_idx = (neighbor_y * width + neighbor_x) as usize;
+                            if visited[neighbor_idx]
+                                || !is_alternate_chroma_like(
+                                    neighbor_pixel,
+                                    &candidate,
+                                    candidate_hue,
+                                )
+                            {
+                                return;
+                            }
+
+                            visited[neighbor_idx] = true;
+                            touches_edge |= neighbor_x == 0
+                                || neighbor_y == 0
+                                || neighbor_x == width - 1
+                                || neighbor_y == height - 1;
+                            region.push((neighbor_x, neighbor_y));
+                            queue.push_back((neighbor_x, neighbor_y));
+                        },
+                    );
+                }
+
+                let is_small = region.len() <= MAX_ALTERNATE_CHROMA_COMPONENT_SIZE;
+                let is_small_relative_to_subject = region
+                    .len()
+                    .saturating_mul(ALTERNATE_CHROMA_SIZE_RATIO)
+                    <= opaque_pixel_count;
+                if touches_transparency
+                    && !touches_edge
+                    && is_small
+                    && is_small_relative_to_subject
+                {
+                    exposed_regions.push(region);
+                }
+            }
+        }
+
+        for region in exposed_regions {
+            for (x, y) in region {
+                image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+            }
         }
     }
 }
@@ -1180,25 +1328,25 @@ pub fn flatten_on_chroma_background(image: &RgbaImage, key: &ChromaKey) -> RgbaI
 /// Places independently generated 256×256 animation moments into one stable
 /// horizontal 8-frame row. Every frame uses the same scale and the same
 /// content box; only the generated pose inside that box is allowed to vary.
-/// Keeps the previous animation frame everywhere except the explicitly
-/// allowed motion region. Image-edit providers may still redraw pixels outside
-/// their bbox, so their full output must never become the next reference frame.
+/// Keeps the stable animation anchor everywhere except the explicitly allowed
+/// motion region. Image-edit providers may still redraw pixels outside their
+/// bbox, so their full output must never become the next reference frame.
 pub fn preserve_motion_region_from_generated(
-    previous: &RgbaImage,
+    anchor: &RgbaImage,
     generated: &RgbaImage,
     motion_bbox: [u32; 4],
 ) -> Result<RgbaImage, String> {
-    if previous.dimensions() != generated.dimensions() {
+    if anchor.dimensions() != generated.dimensions() {
         return Err(format!(
-            "animation frame dimensions do not match for motion-region compositing: previous {}x{}, generated {}x{}",
-            previous.width(),
-            previous.height(),
+            "animation frame dimensions do not match for motion-region compositing: anchor {}x{}, generated {}x{}",
+            anchor.width(),
+            anchor.height(),
             generated.width(),
             generated.height(),
         ));
     }
 
-    let (width, height) = previous.dimensions();
+    let (width, height) = anchor.dimensions();
     let [min_x, min_y, max_x, max_y] = motion_bbox;
     if min_x >= max_x || min_y >= max_y || min_x >= width || min_y >= height {
         return Err(format!(
@@ -1207,13 +1355,88 @@ pub fn preserve_motion_region_from_generated(
     }
     let max_x = max_x.min(width);
     let max_y = max_y.min(height);
-    let mut composited = previous.clone();
+    let mut composited = anchor.clone();
     for y in min_y..max_y {
         for x in min_x..max_x {
             composited.put_pixel(x, y, *generated.get_pixel(x, y));
         }
     }
     Ok(composited)
+}
+
+/// Removes a provider's local colour-grade drift before its motion pixels are
+/// composited into the stable animation anchor. Shape and alpha changes remain
+/// untouched; only the per-channel median offset over overlapping opaque
+/// pixels is corrected.
+pub fn stabilize_motion_region_colors(
+    anchor: &RgbaImage,
+    generated: &RgbaImage,
+    motion_bbox: [u32; 4],
+) -> RgbaImage {
+    if anchor.dimensions() != generated.dimensions() {
+        return generated.clone();
+    }
+
+    const MIN_COLOR_CALIBRATION_SAMPLES: usize = 32;
+    let (width, height) = anchor.dimensions();
+    let [min_x, min_y, max_x, max_y] = motion_bbox;
+    let max_x = max_x.min(width);
+    let max_y = max_y.min(height);
+    if min_x >= max_x || min_y >= max_y || min_x >= width || min_y >= height {
+        return generated.clone();
+    }
+
+    let mut red_offsets = Vec::new();
+    let mut green_offsets = Vec::new();
+    let mut blue_offsets = Vec::new();
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let anchor_pixel = anchor.get_pixel(x, y);
+            let generated_pixel = generated.get_pixel(x, y);
+            if anchor_pixel[3] < 32 || generated_pixel[3] < 32 {
+                continue;
+            }
+            red_offsets.push(i16::from(generated_pixel[0]) - i16::from(anchor_pixel[0]));
+            green_offsets.push(i16::from(generated_pixel[1]) - i16::from(anchor_pixel[1]));
+            blue_offsets.push(i16::from(generated_pixel[2]) - i16::from(anchor_pixel[2]));
+        }
+    }
+
+    if red_offsets.len() < MIN_COLOR_CALIBRATION_SAMPLES {
+        return generated.clone();
+    }
+
+    let median = |offsets: &mut Vec<i16>| {
+        offsets.sort_unstable();
+        offsets[offsets.len() / 2]
+    };
+    let red_offset = median(&mut red_offsets);
+    let green_offset = median(&mut green_offsets);
+    let blue_offset = median(&mut blue_offsets);
+    let adjust = |value: u8, offset: i16| {
+        (i16::from(value) - offset).clamp(0, 255) as u8
+    };
+
+    let mut stabilized = generated.clone();
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let pixel = generated.get_pixel(x, y);
+            if pixel[3] < 32 {
+                continue;
+            }
+            stabilized.put_pixel(
+                x,
+                y,
+                Rgba([
+                    adjust(pixel[0], red_offset),
+                    adjust(pixel[1], green_offset),
+                    adjust(pixel[2], blue_offset),
+                    pixel[3],
+                ]),
+            );
+        }
+    }
+    stabilized
 }
 
 pub fn assemble_animation_frames(frames: &[RgbaImage]) -> Result<RgbaImage, String> {
@@ -1567,8 +1790,8 @@ mod tests {
         assemble_rows, build_row_reference,
         build_static_sprite_row, choose_chroma_key, flatten_on_chroma_background,
         chroma_key_from_hex, image_to_data_url, normalize_base_image, normalize_horizontal_row,
-        preserve_motion_region_from_generated,
-        remove_chroma_background, validate_animated_frame_sequence,
+        preserve_motion_region_from_generated, remove_chroma_background,
+        stabilize_motion_region_colors, validate_animated_frame_sequence,
         validate_animated_frame_sequence_with_motion_region, validate_animated_sprite_row,
         validate_sprite_row, ChromaKey,
         CHROMA_KEY_CANDIDATES,
@@ -1862,6 +2085,23 @@ mod tests {
         assert_eq!(composited.get_pixel(24, 24), previous.get_pixel(24, 24));
         assert_eq!(composited.get_pixel(120, 100), previous.get_pixel(120, 100));
         assert_eq!(composited.get_pixel(120, 176), generated.get_pixel(120, 176));
+    }
+
+    #[test]
+    fn corrects_a_local_provider_colour_grade_without_changing_motion_geometry() {
+        let anchor = RgbaImage::from_pixel(API_FRAME_W, API_FRAME_H, Rgba([100, 120, 140, 255]));
+        let mut generated =
+            RgbaImage::from_pixel(API_FRAME_W, API_FRAME_H, Rgba([1, 2, 3, 255]));
+        for x in 64..192 {
+            for y in 64..192 {
+                generated.put_pixel(x, y, Rgba([70, 90, 110, 255]));
+            }
+        }
+
+        let stabilized = stabilize_motion_region_colors(&anchor, &generated, [64, 64, 192, 192]);
+
+        assert_eq!(stabilized.get_pixel(20, 20), generated.get_pixel(20, 20));
+        assert_eq!(stabilized.get_pixel(128, 128).0, [100, 120, 140, 255]);
     }
 
     #[test]
@@ -2695,4 +2935,44 @@ mod tests {
         assert_eq!(image.get_pixel(32, 32).0, character.0);
     }
 
+    #[test]
+    fn removes_a_small_exposed_alternate_chroma_marker_attached_to_a_character() {
+        let key = CHROMA_KEY_CANDIDATES[0];
+        let background = Rgba([24, 24, 24, 255]);
+        let character = Rgba([220, 80, 80, 255]);
+        let alternate_marker = Rgba([14, 240, 8, 255]);
+        let alternate_fringe = Rgba([16, 50, 16, 255]);
+        let mut image = RgbaImage::from_pixel(64, 64, background);
+
+        for y in 16..52 {
+            for x in 24..40 {
+                image.put_pixel(x, y, character);
+            }
+        }
+        for y in 24..28 {
+            for x in 20..24 {
+                image.put_pixel(x, y, alternate_marker);
+            }
+        }
+        for y in 23..29 {
+            for x in 19..24 {
+                if image.get_pixel(x, y) == &background {
+                    image.put_pixel(x, y, alternate_fringe);
+                }
+            }
+        }
+
+        remove_chroma_background(&mut image, &key);
+
+        assert_eq!(image.get_pixel(32, 32).0, character.0);
+        for y in 23..29 {
+            for x in 19..24 {
+                assert_eq!(
+                    image.get_pixel(x, y).0,
+                    [0, 0, 0, 0],
+                    "alternate chroma marker at ({x}, {y}) should be removed"
+                );
+            }
+        }
+    }
 }
